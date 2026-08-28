@@ -62,7 +62,13 @@ public class MainActivity extends Activity {
                                 if (path.endsWith(".png")) mime = "image/png";
                                 else if (path.endsWith(".jpg") || path.endsWith(".jpeg")) mime = "image/jpeg";
                                 else if (path.endsWith(".pdf")) mime = "application/pdf";
-                                return new WebResourceResponse(mime, "UTF-8", new FileInputStream(localFile));
+                                                            WebResourceResponse response = new WebResourceResponse(mime, "UTF-8", new FileInputStream(localFile));
+                            java.util.Map<String, String> headers = new java.util.HashMap<>();
+                            headers.put("Access-Control-Allow-Origin", "*");
+                            headers.put("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+                            headers.put("Access-Control-Allow-Headers", "*");
+                            response.setResponseHeaders(headers);
+                            return response;
                             }
                         } else if (path.equals("/") || path.equals("/index.html")) {
                             InputStream is = getAssets().open("web/index.html");
@@ -88,7 +94,13 @@ public class MainActivity extends Activity {
                         else if (path.endsWith(".png")) mime = "image/png";
                         else if (path.endsWith(".json") || path.endsWith(".map")) mime = "application/json";
                         
-                        return new WebResourceResponse(mime, "UTF-8", is);
+                                                WebResourceResponse response = new WebResourceResponse(mime, "UTF-8", is);
+                        java.util.Map<String, String> headers = new java.util.HashMap<>();
+                        headers.put("Access-Control-Allow-Origin", "*");
+                        headers.put("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+                        headers.put("Access-Control-Allow-Headers", "*");
+                        response.setResponseHeaders(headers);
+                        return response;
                     }
                 } catch (Exception e) {
                     Log.e("FlowApp", "Asset load error: " + e.getMessage());
@@ -256,5 +268,12 @@ public class MainActivity extends Activity {
                 }
             }
         }).start();
+    }    @Override
+    public void onBackPressed() {
+        if (mWebView != null && mWebView.canGoBack()) {
+            mWebView.goBack();
+        } else {
+            super.onBackPressed();
+        }
     }
 }
