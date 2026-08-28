@@ -1,0 +1,252 @@
+const express = require('express');
+const http = require('http');
+const WebSocket = require('ws');
+const path = require('path');
+const fs = require('fs');
+const os = require('os');
+
+const PORT = process.env.PORT || 3939;
+const DATA_DIR = path.join(__dirname, 'data');
+const DATA_FILE = path.join(DATA_DIR, 'board.json');
+
+// In-memory board state: Map of elementId -> elementObject
+let boardState = {};
+
+// Ensure data directory and file exist
+if (!fs.existsSync(DATA_DIR)) {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+}
+
+if (fs.existsSync(DATA_FILE)) {
+  try {
+    const data = fs.readFileSync(DATA_FILE, 'utf8');
+    boardState = JSON.parse(data || '{}');
+  } catch (err) {
+    console.error('Error reading board.json, starting fresh:', err);
+    boardState = {};
+  }
+} else {
+  fs.writeFileSync(DATA_FILE, JSON.stringify({}, null, 2), 'utf8');
+}
+
+// Debounced file write
+let saveTimeout = null;
+function queueSave() {
+  if (saveTimeout) clearTimeout(saveTimeout);
+  saveTimeout = setTimeout(() => {
+    fs.writeFile(DATA_FILE, JSON.stringify(boardState, null, 2), 'utf8', (err) => {
+      if (err) {
+        console.error('Error saving board state to disk:', err);
+      } else {
+        console.log('Board state successfully persisted to disk.');
+      }
+    });
+  }, 1000); // 1-second debounce
+}
+
+const UPLOADS_DIR = path.join(DATA_DIR, 'uploads');
+if (!fs.existsSync(UPLOADS_DIR)) {
+  fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+}
+
+const app = express();
+app.use(express.static(path.join(__dirname, 'public')));
+
+// Allow cross-origin requests for uploads so the PDF app can fetch and update them
+app.use('/uploads', (req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, PUT, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type');
+  if (req.method === 'OPTIONS') {
+    return res.status(200).end();
+  }
+  next();
+});
+
+// Endpoint to overwrite an existing upload (Sync changes)
+app.put('/uploads/:filename', express.raw({ type: '*/*', limit: '50mb' }), (req, res) => {
+  try {
+    const filename = req.params.filename.replace(/[^a-zA-Z0-9.-]/g, '_');
+    const filePath = path.join(UPLOADS_DIR, filename);
+    if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'File not found' });
+    
+    fs.writeFileSync(filePath, req.body);
+    res.json({ success: true, url: `/uploads/${filename}` });
+  } catch (err) {
+    console.error('Update error:', err);
+    res.status(500).json({ error: 'Failed to update file' });
+  }
+});
+
+app.use('/uploads', express.static(UPLOADS_DIR));
+app.use(express.json({ limit: '50mb' }));
+
+app.post('/upload', (req, res) => {
+  try {
+    const { filename, fileData } = req.body;
+    if (!filename || !fileData) return res.status(400).json({ error: 'Missing file info' });
+    
+    const matches = fileData.match(/^data:(.+);base64,(.+)$/);
+    if (!matches || matches.length !== 3) return res.status(400).json({ error: 'Invalid data URI' });
+    
+    const buffer = Buffer.from(matches[2], 'base64');
+    const safeName = Date.now() + '_' + filename.replace(/[^a-zA-Z0-9.-]/g, '_');
+    const filePath = path.join(UPLOADS_DIR, safeName);
+    
+    fs.writeFileSync(filePath, buffer);
+    res.json({ url: `/uploads/${safeName}` });
+  } catch (err) {
+    console.error('Upload error:', err);
+    res.status(500).json({ error: 'Upload failed' });
+  }
+});
+
+const server = http.createServer(app);
+const wss = new WebSocket.Server({ server });
+
+// WebSocket connection handling
+wss.on('connection', (ws) => {
+  console.log('New client connected.');
+
+  // Send initial board state to the new client
+  ws.send(JSON.stringify({
+    type: 'init',
+    elements: boardState
+  }));
+
+  // Setup ping-pong heartbeat
+  ws.isAlive = true;
+  ws.on('pong', () => {
+    ws.isAlive = true;
+  });
+
+  // Handle incoming messages
+  ws.on('message', (messageString) => {
+    try {
+      const data = JSON.parse(messageString);
+      
+      switch (data.type) {
+        case 'add': {
+          const { element } = data;
+          if (element && element.id) {
+            boardState[element.id] = element;
+            queueSave();
+            broadcast(ws, { type: 'add', element });
+          }
+          break;
+        }
+        case 'update': {
+          const { element } = data;
+          if (element && element.id) {
+            boardState[element.id] = {
+              ...(boardState[element.id] || {}),
+              ...element
+            };
+            queueSave();
+            broadcast(ws, { type: 'update', element });
+          }
+          break;
+        }
+        case 'delete': {
+          const { id } = data;
+          if (id) {
+            delete boardState[id];
+            queueSave();
+            broadcast(ws, { type: 'delete', id });
+          }
+          break;
+        }
+        case 'deleteMultiple': {
+          const { ids } = data;
+          if (Array.isArray(ids)) {
+            ids.forEach(id => {
+              delete boardState[id];
+            });
+            queueSave();
+            broadcast(ws, { type: 'deleteMultiple', ids });
+          }
+          break;
+        }
+        default:
+          console.warn('Unknown message type received:', data.type);
+      }
+    } catch (err) {
+      console.error('Error parsing client message:', err);
+    }
+  });
+
+  ws.on('close', () => {
+    console.log('Client disconnected.');
+  });
+});
+
+// Broadcast helper (sends to all clients except the sender)
+function broadcast(sender, data) {
+  const payload = JSON.stringify(data);
+  wss.clients.forEach((client) => {
+    if (client !== sender && client.readyState === WebSocket.OPEN) {
+      client.send(payload);
+    }
+  });
+}
+
+// Keep-alive heartbeat checker
+const heartbeatInterval = setInterval(() => {
+  wss.clients.forEach((ws) => {
+    if (!ws.isAlive) {
+      console.log('Terminating unresponsive connection.');
+      return ws.terminate();
+    }
+    ws.isAlive = false;
+    ws.ping();
+  });
+}, 30000);
+
+wss.on('close', () => {
+  clearInterval(heartbeatInterval);
+});
+
+// Find and format local network addresses
+function getLocalIPs() {
+  const interfaces = os.networkInterfaces();
+  const ips = [];
+  for (const name of Object.keys(interfaces)) {
+    for (const iface of interfaces[name]) {
+      // Only keep IPv4 addresses that are not internal loopbacks
+      if (iface.family === 'IPv4' && !iface.internal) {
+        ips.push(iface.address);
+      }
+    }
+  }
+  return ips;
+}
+
+const { Bonjour } = require('bonjour-service');
+
+server.listen(PORT, '0.0.0.0', () => {
+  console.log(`==================================================`);
+  console.log(`Flow server started!`);
+  console.log(`Local Access: http://localhost:${PORT}`);
+  
+  const lanIPs = getLocalIPs();
+  if (lanIPs.length > 0) {
+    lanIPs.forEach(ip => {
+      console.log(`LAN Access:   http://${ip}:${PORT}`);
+    });
+  } else {
+    console.log(`LAN Access:   No active LAN interfaces found. Make sure you are connected to Wi-Fi.`);
+  }
+  console.log(`==================================================`);
+
+  // Start mDNS/Bonjour Broadcasting
+  try {
+    const validIPs = lanIPs.filter(ip => !ip.startsWith('192.168.56.'));
+    const hostIP = validIPs.length > 0 ? validIPs[0] : (lanIPs.length > 0 ? lanIPs[0] : '0.0.0.0');
+    
+    const bonjour = new Bonjour();
+    bonjour.publish({ name: 'Flow Whiteboard', type: 'flowboard', port: PORT, host: hostIP });
+    console.log(`[*] mDNS Broadcaster active on ${hostIP}. Android app will detect this automatically on the network.`);
+  } catch (err) {
+    console.error('Failed to start bonjour service:', err);
+  }
+});

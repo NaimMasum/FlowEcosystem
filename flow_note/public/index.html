@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Flow</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <!-- ===== VIEWPORT ===== -->
+  <div id="viewport" class="viewport">
+
+    <!-- Infinite World Canvas -->
+    <div id="world" class="world"></div>
+
+    <!-- ===== STATUS INDICATOR ===== -->
+    <div id="status-indicator" class="status-indicator reconnecting">
+      <span class="status-dot"></span>
+      <span class="status-text">Connecting…</span>
+    </div>
+
+    <!-- ===== DESKTOP TOOLBAR ===== -->
+    <div id="desktop-toolbar" class="desktop-toolbar">
+
+      <!-- Brand -->
+      <div class="brand">
+        <svg class="brand-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">
+          <path d="M4 12c4-8 8 8 16 0" />
+          <path d="M4 18c4-8 8 8 16 0" opacity="0.5" />
+          <path d="M4 6c4-8 8 8 16 0" opacity="0.2" />
+        </svg>
+        <span class="brand-title">Flow</span>
+      </div>
+
+      <div class="toolbar-divider"></div>
+
+      <!-- Tools Group -->
+      <div class="tool-group" role="toolbar" aria-label="Drawing tools">
+        <button class="tool-btn active" id="tool-select" data-tooltip="Select  V">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4l6 18 3-7 7-3z"/><path d="M13.5 13.5l4.5 4.5"/></svg>
+        </button>
+        <button class="tool-btn" id="tool-note" data-tooltip="Sticky Note  N">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h8l6-6V4a2 2 0 00-2-2z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="12" y2="17"/></svg>
+        </button>
+        <button class="tool-btn" id="tool-rect" data-tooltip="Rectangle  R">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="3"/></svg>
+        </button>
+        <button class="tool-btn" id="tool-ellipse" data-tooltip="Ellipse  O">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="12" rx="10" ry="10"/></svg>
+        </button>
+        <button class="tool-btn" id="tool-line" data-tooltip="Line  L">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="4" y1="20" x2="20" y2="4"/></svg>
+        </button>
+        <button class="tool-btn" id="tool-arrow" data-tooltip="Arrow  A">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="19" x2="19" y2="5"/><polyline points="9 5 19 5 19 15"/></svg>
+        </button>
+        <button class="tool-btn" id="tool-image" data-tooltip="Image URL  I">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+        </button>
+      </div>
+
+      <div class="toolbar-divider"></div>
+
+      <!-- Selection Actions -->
+      <div class="selection-actions" id="desktop-selection-actions" style="display:none">
+        <div class="palette-label">COLOR</div>
+        <div class="color-palette" id="desktop-palette">
+          <button class="color-swatch yellow  active" data-color="yellow"  title="Canary"></button>
+          <button class="color-swatch blue"          data-color="blue"    title="Sky"></button>
+          <button class="color-swatch green"         data-color="green"   title="Mint"></button>
+          <button class="color-swatch pink"          data-color="pink"    title="Rose"></button>
+          <button class="color-swatch purple"        data-color="purple"  title="Lavender"></button>
+          <button class="color-swatch orange"        data-color="orange"  title="Peach"></button>
+          <button class="color-swatch blueprint"     data-color="blueprint" title="Blueprint"></button>
+          <button class="color-swatch charcoal"      data-color="charcoal"  title="Charcoal"></button>
+        </div>
+        <div class="toolbar-divider"></div>
+        <button class="delete-btn" id="desktop-delete-btn">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="16" height="16"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4h6v2"/></svg>
+          Delete
+        </button>
+      </div>
+
+      <div style="flex:1"></div>
+
+      <!-- Help Toggle -->
+      <div class="help-section">
+        <button class="help-toggle" id="help-toggle" aria-label="Keyboard shortcuts">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="18" height="18"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+        </button>
+        <div class="help-panel" id="help-panel">
+          <div class="help-title">Keyboard Shortcuts</div>
+          <div class="help-row"><kbd>V</kbd><span>Select / Pan</span></div>
+          <div class="help-row"><kbd>N</kbd><span>Sticky Note</span></div>
+          <div class="help-row"><kbd>R</kbd><span>Rectangle</span></div>
+          <div class="help-row"><kbd>O</kbd><span>Ellipse</span></div>
+          <div class="help-row"><kbd>L</kbd><span>Line</span></div>
+          <div class="help-row"><kbd>A</kbd><span>Arrow</span></div>
+          <div class="help-row"><kbd>I</kbd><span>Image Link</span></div>
+          <div class="help-row"><kbd>Del</kbd><span>Remove selected</span></div>
+          <div class="help-row"><kbd>Scroll</kbd><span>Zoom</span></div>
+          <div class="help-row"><kbd>Space</kbd>+<kbd>drag</kbd><span>Pan</span></div>
+          <div class="help-row"><kbd>Shift</kbd>+<kbd>drag</kbd><span>Multi-select</span></div>
+          <div class="help-row"><kbd>Esc</kbd><span>Deselect</span></div>
+        </div>
+      </div>
+
+    </div><!-- /desktop-toolbar -->
+
+    <!-- ===== MOBILE TOOLBAR ===== -->
+    <div id="mobile-toolbar" class="mobile-toolbar">
+
+      <!-- Selection Drawer (sits above buttons) -->
+      <div class="mobile-selection-drawer" id="mobile-selection-drawer" style="display:none">
+        <div class="drawer-header">
+          <span>Element options</span>
+          <button class="drawer-close-btn" id="mobile-close-drawer" aria-label="Close">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" width="18" height="18"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+        </div>
+        <div class="drawer-body">
+          <div class="mobile-palette" id="mobile-palette">
+            <button class="color-swatch yellow  active" data-color="yellow"></button>
+            <button class="color-swatch blue"          data-color="blue"></button>
+            <button class="color-swatch green"         data-color="green"></button>
+            <button class="color-swatch pink"          data-color="pink"></button>
+            <button class="color-swatch purple"        data-color="purple"></button>
+            <button class="color-swatch orange"        data-color="orange"></button>
+            <button class="color-swatch blueprint"     data-color="blueprint"></button>
+            <button class="color-swatch charcoal"      data-color="charcoal"></button>
+          </div>
+          <div class="drawer-actions" style="display: flex; flex-direction: column; gap: 8px;">
+            <button class="mobile-action-btn edit" id="mobile-edit-btn">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="16" height="16"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 013 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+              Edit Text
+            </button>
+            <button class="mobile-action-btn delete" id="mobile-delete-btn">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="16" height="16"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M9 6V4h6v2"/></svg>
+              Delete
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Button row -->
+      <div class="mobile-scroller" role="toolbar">
+        <button class="mobile-btn active" id="m-tool-select">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="22" height="22"><path d="M4 4l6 18 3-7 7-3z"/><path d="M13.5 13.5l4.5 4.5"/></svg>
+          <span>Select</span>
+        </button>
+        <button class="mobile-btn" id="m-tool-note">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="22" height="22"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h8l6-6V4a2 2 0 00-2-2z"/><polyline points="14 2 14 8 20 8"/></svg>
+          <span>Note</span>
+        </button>
+        <button class="mobile-btn" id="m-tool-rect">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="22" height="22"><rect x="3" y="3" width="18" height="18" rx="3"/></svg>
+          <span>Rect</span>
+        </button>
+        <button class="mobile-btn" id="m-tool-ellipse">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="22" height="22"><ellipse cx="12" cy="12" rx="10" ry="10"/></svg>
+          <span>Circle</span>
+        </button>
+        <button class="mobile-btn" id="m-tool-line">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" width="22" height="22"><line x1="4" y1="20" x2="20" y2="4"/></svg>
+          <span>Line</span>
+        </button>
+        <button class="mobile-btn" id="m-tool-arrow">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="22" height="22"><line x1="5" y1="19" x2="19" y2="5"/><polyline points="9 5 19 5 19 15"/></svg>
+          <span>Arrow</span>
+        </button>
+        <button class="mobile-btn" id="m-tool-image">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="22" height="22"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+          <span>Image</span>
+        </button>
+      </div>
+
+    </div><!-- /mobile-toolbar -->
+
+    <!-- ===== IMAGE URL MODAL ===== -->
+    <div id="image-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+      <div class="modal-backdrop" id="modal-backdrop"></div>
+      <div class="modal-content img-modal-content">
+
+        <div class="modal-header">
+          <h2 class="modal-title">Add File / Image</h2>
+          <button class="modal-close" id="image-cancel-btn" aria-label="Cancel">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" width="18" height="18"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+        </div>
+
+        <!-- Tab bar -->
+        <div class="img-tabs">
+          <button class="img-tab active" data-tab="url">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="14" height="14"><path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71"/></svg>
+            URL
+          </button>
+          <button class="img-tab" data-tab="upload">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="14" height="14"><polyline points="16 16 12 12 8 16"/><line x1="12" y1="12" x2="12" y2="21"/><path d="M20.39 18.39A5 5 0 0018 9h-1.26A8 8 0 103 16.3"/></svg>
+            Upload
+          </button>
+        </div>
+
+        <!-- URL tab -->
+        <div class="img-tab-panel" id="tab-url">
+          <div class="url-input-row">
+            <input type="url" id="image-url-input" class="modal-input url-input"
+              placeholder="https://example.com/photo.jpg or document.pdf" autocomplete="off" spellcheck="false">
+            <span class="url-status" id="url-status"></span>
+          </div>
+        </div>
+
+        <!-- Upload/drop tab -->
+        <div class="img-tab-panel hidden" id="tab-upload">
+          <label class="drop-zone" id="drop-zone" for="file-picker">
+            <div class="drop-zone-icon">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" width="36" height="36"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+            </div>
+            <p class="drop-zone-title">Drop a file or image here</p>
+            <p class="drop-zone-sub">or <span class="drop-zone-link">browse files</span></p>
+            <p class="drop-zone-hint">Images, PDF, Word · max 20 MB</p>
+            <input type="file" id="file-picker" accept="*/*" hidden>
+          </label>
+          <p class="paste-hint">
+            <kbd>Ctrl</kbd>+<kbd>V</kbd> anywhere to paste a copied image
+          </p>
+        </div>
+
+        <!-- Preview zone (shared between tabs) -->
+        <div class="img-preview-zone" id="img-preview-zone">
+          <div class="img-preview-inner" id="img-preview-inner">
+            <!-- populated by JS -->
+          </div>
+        </div>
+
+        <div class="modal-footer">
+          <button class="modal-btn secondary" id="image-cancel-btn2">Cancel</button>
+          <button class="modal-btn primary" id="image-submit-btn" disabled>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="15" height="15"><polyline points="20 6 9 17 4 12"/></svg>
+            Add to board
+          </button>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- ===== TOAST NOTIFICATION ===== -->
+    <div id="toast" class="toast" aria-live="polite"></div>
+
+  </div><!-- /viewport -->
+
+  <script src="app.js"></script>
+</body>
+</html>
