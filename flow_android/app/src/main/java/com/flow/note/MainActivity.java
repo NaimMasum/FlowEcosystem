@@ -30,7 +30,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public class MainActivity extends Activity {
     private WebView mWebView;
     private final int NOTE_PORT = 3939;
-    private final int PDF_PORT = 3940;
+    private final int PDF_PORT = 4040;
     private AtomicBoolean found = new AtomicBoolean(false);
 
     @Override
