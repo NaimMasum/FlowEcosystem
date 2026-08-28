@@ -21,3 +21,10 @@ task copyWebAssets(type: Copy) {
 }
 
 preBuild.dependsOn copyWebAssets
+
+task copyPdfAssets(type: Copy) {
+    from '../../flow_pdf/public'
+    into 'src/main/assets/pdf'
+}
+
+preBuild.dependsOn copyPdfAssets
