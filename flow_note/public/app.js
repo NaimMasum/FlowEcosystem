@@ -141,7 +141,7 @@ function flushOfflineQueue() {
           ws.send(JSON.stringify({ type: op.type, ...op.payload }));
         }
       });
-      localStorage.removeItem('flow_note_queue');
+      // Do not remove item here to prevent race condition with incoming 'init' message
     }
   } catch (e) {}
 }
@@ -196,6 +196,20 @@ function handleServerMsg(msg) {
     case 'init': {
       clearAllNodes();
       elements = msg.elements || {};
+      try {
+        const queue = JSON.parse(localStorage.getItem('flow_note_queue') || '[]');
+        queue.forEach(op => {
+          if (op.type === 'add' || op.type === 'update') {
+            if (op.payload.element) elements[op.payload.element.id] = op.payload.element;
+          } else if (op.type === 'delete') {
+            if (op.payload.id) delete elements[op.payload.id];
+          } else if (op.type === 'deleteMultiple') {
+            if (op.payload.ids) op.payload.ids.forEach(id => delete elements[id]);
+          }
+        });
+        localStorage.removeItem('flow_note_queue');
+      } catch (e) {}
+
       for (const el of Object.values(elements)) {
         fixBBox(el);
         mountElement(el);
