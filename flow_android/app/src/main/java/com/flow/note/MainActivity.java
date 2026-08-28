@@ -3,6 +3,7 @@ package com.flow.note;
 import android.app.Activity;
 import android.net.wifi.WifiManager;
 import android.os.Bundle;
+import android.content.SharedPreferences;
 import android.text.format.Formatter;
 import android.util.Log;
 import android.webkit.WebSettings;
@@ -31,6 +32,7 @@ public class MainActivity extends Activity {
         WebSettings webSettings = mWebView.getSettings();
         webSettings.setJavaScriptEnabled(true);
         webSettings.setDomStorageEnabled(true);
+        webSettings.setCacheMode(WebSettings.LOAD_CACHE_ELSE_NETWORK);
         
         mWebView.setWebViewClient(new WebViewClient());
         

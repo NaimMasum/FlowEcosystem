@@ -88,6 +88,17 @@ const SHAPE_COLORS = {
 // INIT
 // ─────────────────────────────────────────────────────────────
 function init() {
+  try {
+    const cached = localStorage.getItem('flow_note_state');
+    if (cached) {
+      elements = JSON.parse(cached);
+      for (const el of Object.values(elements)) {
+        fixBBox(el);
+        mountElement(el);
+      }
+    }
+  } catch(e){}
+
   // Centre the canvas initially (world 0,0 → viewport centre)
   const r = viewport.getBoundingClientRect();
   panX = r.width  / 2;
@@ -107,6 +118,34 @@ function init() {
 // ─────────────────────────────────────────────────────────────
 // WEBSOCKET
 // ─────────────────────────────────────────────────────────────
+
+// ================= OFFLINE QUEUE HELPERS =================
+function saveLocalState() {
+  try { localStorage.setItem('flow_note_state', JSON.stringify(elements)); } catch (e) {}
+}
+
+function enqueueOp(type, payload) {
+  try {
+    const queue = JSON.parse(localStorage.getItem('flow_note_queue') || '[]');
+    queue.push({ type, payload });
+    localStorage.setItem('flow_note_queue', JSON.stringify(queue));
+  } catch (e) {}
+}
+
+function flushOfflineQueue() {
+  try {
+    const queue = JSON.parse(localStorage.getItem('flow_note_queue') || '[]');
+    if (queue.length > 0) {
+      queue.forEach(op => {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: op.type, ...op.payload }));
+        }
+      });
+      localStorage.removeItem('flow_note_queue');
+    }
+  } catch (e) {}
+}
+
 function connectWebSocket() {
   setStatus('connecting');
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -136,7 +175,10 @@ function connectWebSocket() {
 function sendOp(type, payload) {
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({ type, ...payload }));
+  } else {
+    enqueueOp(type, payload);
   }
+  saveLocalState();
 }
 
 function setStatus(state) {
