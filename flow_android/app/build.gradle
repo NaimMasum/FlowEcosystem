@@ -14,3 +14,10 @@ android {
         versionName "1.0"
     }
 }
+
+task copyWebAssets(type: Copy) {
+    from '../../flow_note/public'
+    into 'src/main/assets/web'
+}
+
+preBuild.dependsOn copyWebAssets
