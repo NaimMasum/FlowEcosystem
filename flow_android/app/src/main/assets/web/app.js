@@ -1,11 +1,11 @@
 /* ============================================================
-   NOTEBOARD â€” app.js
+   NOTEBOARD — app.js
    Infinite canvas engine, pointer interactions, WebSocket sync.
    ============================================================ */
 
 'use strict';
 
-// â”€â”€ DOM refs â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── DOM refs ─────────────────────────────────────────────────
 const viewport   = document.getElementById('viewport');
 const world      = document.getElementById('world');
 const statusEl   = document.getElementById('status-indicator');
@@ -13,21 +13,21 @@ const statusDot  = statusEl.querySelector('.status-dot');
 const statusText = statusEl.querySelector('.status-text');
 const toastEl    = document.getElementById('toast');
 
-// â”€â”€ Board state â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-let elements    = {};          // id â†’ element object
-let elementNodes = new Map();  // id â†’ DOM node
+// ── Board state ───────────────────────────────────────────────
+let elements    = {};          // id → element object
+let elementNodes = new Map();  // id → DOM node
 
-// â”€â”€ Viewport transform â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Viewport transform ────────────────────────────────────────
 let panX = 0, panY = 0, zoom = 1;
 
-// â”€â”€ Tool â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Tool ──────────────────────────────────────────────────────
 let activeTool = 'select';
 
-// â”€â”€ Selection â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Selection ─────────────────────────────────────────────────
 let selectedIds = new Set();
 
-// â”€â”€ Pointer state â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-const activePointers = new Map(); // pointerId â†’ {clientX, clientY}
+// ── Pointer state ─────────────────────────────────────────────
+const activePointers = new Map(); // pointerId → {clientX, clientY}
 
 let isDraggingCanvas   = false;
 let isDraggingElement  = false;
@@ -44,7 +44,7 @@ let dragWorldStartX = 0; // world coords at drag-start
 let dragWorldStartY = 0;
 let dragElementSnaps = []; // snapshots of element positions when drag started
 
-// Drag threshold â€” prevent micro-movements (e.g. from double-click) from moving elements
+// Drag threshold — prevent micro-movements (e.g. from double-click) from moving elements
 const DRAG_THRESHOLD   = 5;   // pixels before drag activates
 let dragStartClientX   = 0;
 let dragStartClientY   = 0;
@@ -54,7 +54,7 @@ let lastDblClickTime   = 0;
 
 // Registry of shape text-editor enter functions keyed by element id
 // Populated by buildShapeContent; lets the keyboard handler trigger edit mode
-const shapeTextEditors = new Map(); // id â†’ enterShapeEdit()
+const shapeTextEditors = new Map(); // id → enterShapeEdit()
 
 let resizeHandleType = null; // 'nw' | 'ne' | 'se' | 'sw' | 'start' | 'end'
 
@@ -67,12 +67,12 @@ let prevPinchDist = null;
 let prevPinchMidX = null;
 let prevPinchMidY = null;
 
-// â”€â”€ WebSocket â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── WebSocket ─────────────────────────────────────────────────
 let ws              = null;
 let reconnectDelay  = 1000;
 const MAX_RECONNECT = 16000;
 
-// â”€â”€ Shape colour maps â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Shape colour maps ─────────────────────────────────────────
 const SHAPE_COLORS = {
   blueprint: { stroke: '#2563eb', fill: 'rgba(37,99,235,0.10)' },
   charcoal:  { stroke: '#334155', fill: 'rgba(51,65,85,0.10)'  },
@@ -84,9 +84,9 @@ const SHAPE_COLORS = {
   orange:    { stroke: '#ea580c', fill: 'rgba(234,88,12,0.10)' },
 };
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────
 // INIT
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────
 function init() {
   try {
     const cached = localStorage.getItem('flow_note_state');
@@ -99,7 +99,7 @@ function init() {
     }
   } catch(e){}
 
-  // Centre the canvas initially (world 0,0 â†’ viewport centre)
+  // Centre the canvas initially (world 0,0 → viewport centre)
   const r = viewport.getBoundingClientRect();
   panX = r.width  / 2;
   panY = r.height / 2;
@@ -113,15 +113,15 @@ function init() {
   setupModals();
 
   window.addEventListener('offline', () => {
-    if (ws) ws.close(); // Force close socket so readyState updates instantly
+    if (ws) ws.close();
   });
 
   window.addEventListener('resize', applyTransform);
 }
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────
 // WEBSOCKET
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────
 
 // ================= OFFLINE QUEUE HELPERS =================
 function saveLocalState() {
@@ -155,7 +155,7 @@ function connectWebSocket() {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   ws = new WebSocket(`${proto}//${location.host}`);
 
-    ws.onopen = () => {
+  ws.onopen = () => {
     setStatus('connected');
     reconnectDelay = 1000;
     flushOfflineQueue();
@@ -190,12 +190,12 @@ function setStatus(state) {
   statusEl.className = `status-indicator ${state}`;
   statusText.textContent =
     state === 'connected'    ? 'Connected'     :
-    state === 'connecting'   ? 'Connectingâ€¦'   : 'Disconnected';
+    state === 'connecting'   ? 'Connecting…'   : 'Disconnected';
 }
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────
 // SERVER MESSAGE HANDLER
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────
 function handleServerMsg(msg) {
   switch (msg.type) {
     case 'init': {
@@ -255,9 +255,9 @@ function handleServerMsg(msg) {
   }
 }
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────
 // CANVAS TRANSFORM
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────
 function applyTransform() {
   world.style.transform = `translate(${panX}px,${panY}px) scale(${zoom})`;
 }
@@ -270,9 +270,9 @@ function clientToWorld(cx, cy) {
   };
 }
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────
 // BOUNDING BOX (lines / arrows store x1,y1,x2,y2)
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────
 function fixBBox(el) {
   if (el.type === 'line' || el.type === 'arrow') {
     el.x = Math.min(el.x1, el.x2);
@@ -282,9 +282,9 @@ function fixBBox(el) {
   }
 }
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-// ELEMENT DOM â€” CREATE / UPDATE / DELETE
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────
+// ELEMENT DOM — CREATE / UPDATE / DELETE
+// ─────────────────────────────────────────────────────────────
 function mountElement(el, animate = false) {
   // Remove stale node if present
   const old = elementNodes.get(el.id);
@@ -304,7 +304,7 @@ function buildNode(el, animate) {
 
   if (!animate) node.style.animation = 'none';
 
-  // Pointer handler â€” select + drag
+  // Pointer handler — select + drag
   node.addEventListener('pointerdown', e => onElementPointerDown(e, el.id));
 
   if (el.type === 'note') {
@@ -322,13 +322,13 @@ function buildNode(el, animate) {
 }
 
 function buildNoteContent(node, el) {
-  // â”€â”€ Font-size controls â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── Font-size controls ───────────────────────────────
   const header = document.createElement('div');
   header.className = 'note-header';
 
   const btnSmaller = document.createElement('button');
   btnSmaller.className = 'note-font-btn';
-  btnSmaller.textContent = 'Aâˆ’';
+  btnSmaller.textContent = 'A−';
   btnSmaller.title = 'Smaller text';
 
   const btnLarger = document.createElement('button');
@@ -367,10 +367,10 @@ function buildNoteContent(node, el) {
   // Apply saved font size immediately
   if (el.fontSize) node.style.setProperty('--note-font-size', `${el.fontSize}px`);
 
-  // â”€â”€ Text body wrapper â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── Text body wrapper ────────────────────────────────
   const body = document.createElement('div');
   body.className = 'note-body';
-  body.dataset.placeholder = 'Click to writeâ€¦';
+  body.dataset.placeholder = 'Click to write…';
 
   const ta = document.createElement('textarea');
   ta.className = 'note-text';
@@ -389,10 +389,10 @@ function buildNoteContent(node, el) {
     ta.style.height = ta.scrollHeight + 'px';
   };
 
-  // â”€â”€ Single-click to start editing â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── Single-click to start editing ─────────────────────
   ta.addEventListener('pointerdown', e => {
     if (!ta.readOnly) {
-      // Already editing â€” just let the cursor land normally
+      // Already editing — just let the cursor land normally
       e.stopPropagation();
       return;
     }
@@ -475,7 +475,7 @@ function buildFileContent(node, el) {
   
   const icon = document.createElement('div');
   icon.className = 'file-icon';
-  icon.innerHTML = 'ðŸ“„';
+  icon.innerHTML = '📄';
   
   const name = document.createElement('div');
   name.className = 'file-name';
@@ -498,7 +498,7 @@ function buildFileContent(node, el) {
     const annotateBtn = document.createElement('a');
     annotateBtn.className = 'file-download';
     annotateBtn.title = 'Annotate PDF (Official PDF.js)';
-    annotateBtn.innerHTML = '<span style="font-size: 16px;">ðŸ–Šï¸</span>';
+    annotateBtn.innerHTML = '<span style="font-size: 16px;">🖊️</span>';
     annotateBtn.target = '_blank';
     const absoluteUrl = new URL(el.url, window.location.origin).href;
     const cacheBusterUrl = `${absoluteUrl}?v=${Date.now()}`;
@@ -512,13 +512,13 @@ function buildFileContent(node, el) {
 }
 
 function buildShapeContent(node, el) {
-  // â”€â”€ SVG layer (the actual drawn shape) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── SVG layer (the actual drawn shape) ───────────────
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
   svg.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
   node.appendChild(svg);
   syncNodeSVG(node, el);
 
-  // â”€â”€ Text overlay â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── Text overlay ─────────────────────────────────────
   const wrap = document.createElement('div');
   wrap.className = 'shape-text-wrap';
 
@@ -532,9 +532,9 @@ function buildShapeContent(node, el) {
   const ta = document.createElement('textarea');
   ta.className = 'shape-text-ta';
   ta.value      = el.text || '';
-  ta.placeholder = 'Type hereâ€¦';
+  ta.placeholder = 'Type here…';
 
-  // â”€â”€ Edit mode helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── Edit mode helpers ─────────────────────────────────
   function enterShapeEdit() {
     const stored = elements[el.id];
     ta.value = stored?.text || '';
@@ -563,7 +563,7 @@ function buildShapeContent(node, el) {
     }
   }
 
-  // â”€â”€ Event listeners â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── Event listeners ────────────────────────────────────
   // Prevent drag starting when clicking inside the edit textarea
   ta.addEventListener('pointerdown', e => e.stopPropagation());
   // Keep local state in sync while typing
@@ -725,9 +725,9 @@ function dropNode(id) {
   shapeTextEditors.delete(id); // clean up editor registry
 }
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────
 // SELECTION HANDLES
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────
 function refreshHandles(node, el) {
   node.querySelectorAll('.resize-handle').forEach(h => h.remove());
   if (!selectedIds.has(el.id)) return;
@@ -757,9 +757,9 @@ function addHandle(node, el, name, left, top) {
   return h;
 }
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────
 // SELECT / DESELECT
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────
 function select(id, additive = false) {
   if (!additive) {
     selectedIds.forEach(old => {
@@ -816,16 +816,16 @@ function markActiveSwatch(color) {
   });
 }
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────
 // CANVAS POINTER EVENTS
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────
 function setupCanvasPointers() {
   viewport.addEventListener('pointerdown',   onCanvasDown);
   viewport.addEventListener('pointermove',   onCanvasMove);
   viewport.addEventListener('pointerup',     onCanvasUp);
   viewport.addEventListener('pointercancel', onCanvasUp);
 
-  // â”€â”€ Drag image files directly onto the canvas â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── Drag image files directly onto the canvas ──────────
   viewport.addEventListener('dragenter', e => {
     if ([...e.dataTransfer.types].includes('Files')) {
       e.preventDefault();
@@ -866,7 +866,7 @@ function setupCanvasPointers() {
     }
   });
 
-  // â”€â”€ Ctrl+V paste file/image anywhere on canvas â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── Ctrl+V paste file/image anywhere on canvas ──────────────
   document.addEventListener('paste', e => {
     // If the modal is open, its own paste handler takes care of it
     const modal = document.getElementById('image-modal');
@@ -888,13 +888,13 @@ function setupCanvasPointers() {
   });
 }
 
-// â”€â”€ Helper: upload File â†’ Server â†’ place on board â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Helper: upload File → Server → place on board ─────────────
 function uploadAndPlaceFile(file, cx, cy) {
   if (file.size > 20 * 1024 * 1024) {
-    showToast('âŒ File too large (max 20 MB)');
+    showToast('❌ File too large (max 20 MB)');
     return;
   }
-  showToast('â³ Uploading...');
+  showToast('⏳ Uploading...');
   const reader = new FileReader();
   reader.onload = async ev => {
     try {
@@ -912,17 +912,17 @@ function uploadAndPlaceFile(file, cx, cy) {
       } else {
         placeFileAt(data.url, file.name || 'File', cx, cy);
       }
-      showToast('âœ… Upload complete');
+      showToast('✅ Upload complete');
     } catch (e) {
       console.error(e);
-      showToast('âŒ Upload failed');
+      showToast('❌ Upload failed');
     }
   };
-  reader.onerror = () => showToast('âŒ Could not read file locally');
+  reader.onerror = () => showToast('❌ Could not read file locally');
   reader.readAsDataURL(file);
 }
 
-// â”€â”€ Helper: probe URL/dataURL dimensions â†’ add element â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Helper: probe URL/dataURL dimensions → add element ─────────
 function placeImageAt(url, cx, cy, presetW = null, presetH = null) {
   const doPlace = (natW, natH) => {
     const MAX = 520;
@@ -949,7 +949,7 @@ function placeImageAt(url, cx, cy, presetW = null, presetH = null) {
   } else {
     const img = new Image();
     img.onload = () => doPlace(img.naturalWidth, img.naturalHeight);
-    img.onerror = () => showToast('âŒ Could not load image');
+    img.onerror = () => showToast('❌ Could not load image');
     img.src = url;
   }
 }
@@ -958,13 +958,13 @@ function onCanvasDown(e) {
   // Skip if the click originated on a UI panel (toolbar / modal buttons)
   if (e.target.closest('.desktop-toolbar, .mobile-toolbar, .modal, .status-indicator')) return;
 
-  // Skip the second press of a double-click â€” it would interfere with dblclick handlers
+  // Skip the second press of a double-click — it would interfere with dblclick handlers
   if (e.detail >= 2) return;
 
   viewport.setPointerCapture(e.pointerId);
   activePointers.set(e.pointerId, { clientX: e.clientX, clientY: e.clientY });
 
-  // â”€â”€ Two-finger pinch start â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── Two-finger pinch start ──────────────────────────────
   if (activePointers.size === 2) {
     isDraggingCanvas  = false;
     isDraggingElement = false;
@@ -978,11 +978,11 @@ function onCanvasDown(e) {
     return;
   }
 
-  // â”€â”€ Element or resize handle click passthrough â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── Element or resize handle click passthrough ──────────
   // These are handled by onElementPointerDown / onHandlePointerDown
   // which call e.stopPropagation(), so we only reach here for canvas clicks.
 
-  // â”€â”€ Non-select tools â†’ create element â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── Non-select tools → create element ──────────────────
   if (activeTool !== 'select') {
     const wp = clientToWorld(e.clientX, e.clientY);
     createElement(activeTool, wp.x, wp.y);
@@ -990,7 +990,7 @@ function onCanvasDown(e) {
     return;
   }
 
-  // â”€â”€ Spacebar panning â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── Spacebar panning ────────────────────────────────────
   if (isSpaceHeld) {
     isDraggingCanvas = true;
     canvasDragStartClientX = e.clientX;
@@ -1000,12 +1000,12 @@ function onCanvasDown(e) {
     return;
   }
 
-  // â”€â”€ Click on empty canvas â†’ deselect â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── Click on empty canvas → deselect ───────────────────
   if (e.target === world || e.target === viewport) {
     deselect();
   }
 
-  // â”€â”€ Shift-drag â†’ marquee selection â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── Shift-drag → marquee selection ─────────────────────
   if (e.shiftKey && e.button === 0) {
     isDragSelecting = true;
     marqueeStart    = { x: e.clientX, y: e.clientY };
@@ -1013,7 +1013,7 @@ function onCanvasDown(e) {
     return;
   }
 
-  // â”€â”€ Normal canvas pan â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── Normal canvas pan ───────────────────────────────────
   if (e.target === world || e.target === viewport) {
     isDraggingCanvas = true;
     canvasDragStartClientX = e.clientX;
@@ -1027,7 +1027,7 @@ function onCanvasMove(e) {
   if (!activePointers.has(e.pointerId)) return;
   activePointers.set(e.pointerId, { clientX: e.clientX, clientY: e.clientY });
 
-  // â”€â”€ Pinch gesture â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── Pinch gesture ───────────────────────────────────────
   if (activePointers.size === 2) {
     const pts  = [...activePointers.values()];
     const dx   = pts[1].clientX - pts[0].clientX;
@@ -1054,7 +1054,7 @@ function onCanvasMove(e) {
 
   const wp = clientToWorld(e.clientX, e.clientY);
 
-  // â”€â”€ Element resize â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── Element resize ──────────────────────────────────────
   if (isResizing && dragElementSnaps.length === 1) {
     const snap = dragElementSnaps[0];
     const el   = elements[snap.id];
@@ -1084,14 +1084,14 @@ function onCanvasMove(e) {
     return;
   }
 
-  // â”€â”€ Element drag â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── Element drag ────────────────────────────────────────
   if (isDraggingElement) {
-    // Enforce drag threshold â€” don't move until pointer travels DRAG_THRESHOLD px
+    // Enforce drag threshold — don't move until pointer travels DRAG_THRESHOLD px
     if (!dragThresholdMet) {
       const clientDx = e.clientX - dragStartClientX;
       const clientDy = e.clientY - dragStartClientY;
       if (Math.hypot(clientDx, clientDy) < DRAG_THRESHOLD) return;
-      // Threshold exceeded â€” apply visual lift now
+      // Threshold exceeded — apply visual lift now
       dragThresholdMet = true;
       dragElementSnaps.forEach(snap => {
         const node = elementNodes.get(snap.id);
@@ -1146,13 +1146,13 @@ function onCanvasMove(e) {
     return;
   }
 
-  // â”€â”€ Marquee selection â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── Marquee selection ───────────────────────────────────
   if (isDragSelecting && marqueeEl) {
     updateMarquee(e.clientX, e.clientY);
     return;
   }
 
-  // â”€â”€ Canvas pan â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── Canvas pan ──────────────────────────────────────────
   if (isDraggingCanvas) {
     panX = canvasDragStartPanX + (e.clientX - canvasDragStartClientX);
     panY = canvasDragStartPanY + (e.clientY - canvasDragStartClientY);
@@ -1201,7 +1201,7 @@ function onCanvasUp(e) {
     }
   }
 
-  // Finish element drag â€” remove dragging class only if drag actually started
+  // Finish element drag — remove dragging class only if drag actually started
   if (isDraggingElement && dragThresholdMet) {
     dragElementSnaps.forEach(snap => {
       const node = elementNodes.get(snap.id);
@@ -1226,9 +1226,9 @@ function onCanvasUp(e) {
   hideResizeBadge();
 }
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────
 // ELEMENT POINTER DOWN
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────
 function onElementPointerDown(e, id) {
   // Let textarea handle its own events when in edit mode
   if (e.target.tagName === 'TEXTAREA' && !e.target.readOnly) return;
@@ -1238,7 +1238,7 @@ function onElementPointerDown(e, id) {
   // If a non-select tool is active, canvas pointerdown will handle placement
   if (activeTool !== 'select') return;
 
-  // Second press of a double-click â€” skip drag setup entirely so dblclick handlers run cleanly
+  // Second press of a double-click — skip drag setup entirely so dblclick handlers run cleanly
   if (e.detail >= 2) return;
 
   const additive = e.shiftKey || e.ctrlKey || e.metaKey;
@@ -1253,7 +1253,7 @@ function onElementPointerDown(e, id) {
 
   select(id, additive);
 
-  // Start element drag â€” but movement is deferred until DRAG_THRESHOLD is exceeded
+  // Start element drag — but movement is deferred until DRAG_THRESHOLD is exceeded
   isDraggingElement  = true;
   dragThresholdMet   = false;
   dragStartClientX   = e.clientX;
@@ -1272,16 +1272,16 @@ function onElementPointerDown(e, id) {
   activePointers.set(e.pointerId, { clientX: e.clientX, clientY: e.clientY });
 }
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────
 // RESIZE HANDLE POINTER DOWN
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────
 function onHandlePointerDown(e, id, handleName) {
   e.stopPropagation();
   e.preventDefault();
 
   isResizing       = true;
   resizeHandleType = handleName;
-  dragThresholdMet = true; // resize handles respond immediately â€” no deadzone
+  dragThresholdMet = true; // resize handles respond immediately — no deadzone
 
   select(id, false);
 
@@ -1301,9 +1301,9 @@ function onHandlePointerDown(e, id, handleName) {
   activePointers.set(e.pointerId, { clientX: e.clientX, clientY: e.clientY });
 }
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────
 // RESIZE MATH
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────
 function applyResize(el, snap, handle, dxW, dyW) {
   const MIN = 40;
 
@@ -1347,9 +1347,9 @@ function applyResize(el, snap, handle, dxW, dyW) {
   showResizeBadge(el, Math.round(nw), Math.round(nh));
 }
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-// RESIZE BADGE (live W Ã— H readout during resize)
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────
+// RESIZE BADGE (live W × H readout during resize)
+// ─────────────────────────────────────────────────────────────
 let resizeBadge      = null;
 let resizeLockRatio  = false; // toggled by Shift key during resize
 
@@ -1359,8 +1359,8 @@ function showResizeBadge(el, w, h) {
     resizeBadge.className = 'resize-badge';
     viewport.appendChild(resizeBadge);
   }
-  const lockIcon = resizeLockRatio ? 'ðŸ”’ ' : '';
-  resizeBadge.textContent = `${lockIcon}${w} Ã— ${h}`;
+  const lockIcon = resizeLockRatio ? '🔒 ' : '';
+  resizeBadge.textContent = `${lockIcon}${w} × ${h}`;
 
   // Position badge near the se corner of the element in client space
   const bx = el.x * zoom + panX + el.w * zoom + 8;
@@ -1374,9 +1374,9 @@ function hideResizeBadge() {
 }
 
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────
 // MOUSE WHEEL ZOOM
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────
 function setupWheel() {
   viewport.addEventListener('wheel', e => {
     e.preventDefault();
@@ -1389,9 +1389,9 @@ function setupWheel() {
   }, { passive: false });
 }
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────
 // MARQUEE SELECTION
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────
 function createMarquee() {
   if (marqueeEl) marqueeEl.remove();
   marqueeEl = document.createElement('div');
@@ -1434,9 +1434,9 @@ function finishMarquee(cx, cy) {
   syncSelectionUI();
 }
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────
 // ELEMENT CREATION
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────
 function nextZ() {
   const vals = Object.values(elements);
   return vals.length ? Math.max(...vals.map(e => e.zIndex || 0)) + 1 : 1;
@@ -1475,9 +1475,9 @@ function createElement(type, wx, wy) {
   }
 }
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────
 // EDIT SELECTED TEXT
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────
 function editSelected() {
   if (selectedIds.size !== 1) return;
   const [selId] = selectedIds;
@@ -1494,9 +1494,9 @@ function editSelected() {
   }
 }
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────
 // DELETE SELECTED
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────
 function deleteSelected() {
   if (!selectedIds.size) return;
   const ids = [...selectedIds];
@@ -1510,9 +1510,9 @@ function deleteSelected() {
   showToast(`Deleted ${ids.length} item${ids.length > 1 ? 's' : ''}`);
 }
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────
 // ACTIVE TOOL
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────
 const toolDefs = [
   { id: 'tool-select',  mId: 'm-tool-select',  name: 'select'  },
   { id: 'tool-note',    mId: 'm-tool-note',    name: 'note'    },
@@ -1536,9 +1536,9 @@ function setActiveTool(name) {
   });
 }
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────
 // TOOLBAR SETUP
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────
 function setupToolbar() {
   toolDefs.forEach(t => {
     [t.id, t.mId].forEach(btnId => {
@@ -1560,7 +1560,7 @@ function setupToolbar() {
     });
   });
 
-  // Color swatches â€” both desktop and mobile palettes
+  // Color swatches — both desktop and mobile palettes
   document.querySelectorAll('.color-swatch').forEach(sw => {
     sw.addEventListener('click', () => {
       const color = sw.dataset.color;
@@ -1590,9 +1590,9 @@ function setupToolbar() {
   if (closeBtn) closeBtn.addEventListener('click', deselect);
 }
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-// MODALS â€” Image insertion with URL, upload, drag-drop, paste
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────
+// MODALS — Image insertion with URL, upload, drag-drop, paste
+// ─────────────────────────────────────────────────────────────
 
 // State for the pending image to insert
 let pendingImageUrl  = null; // resolved URL/dataURL ready to place
@@ -1613,7 +1613,7 @@ function setupModals() {
   const filePicker = document.getElementById('file-picker');
   const tabs       = document.querySelectorAll('.img-tab');
 
-  // â”€â”€ Close helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── Close helpers ──────────────────────────────────────
   const closeModal = () => {
     modal.classList.remove('open');
     clearPreview();
@@ -1628,7 +1628,7 @@ function setupModals() {
   cancelBtn2?.addEventListener('click', closeModal);
   backdrop?.addEventListener('click',   closeModal);
 
-  // â”€â”€ Tab switching â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── Tab switching ──────────────────────────────────────
   tabs.forEach(tab => {
     tab.addEventListener('click', () => {
       tabs.forEach(t => t.classList.remove('active'));
@@ -1639,7 +1639,7 @@ function setupModals() {
     });
   });
 
-  // â”€â”€ URL tab: debounced live preview â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── URL tab: debounced live preview ────────────────────
   urlInput?.addEventListener('input', () => {
     clearTimeout(previewDebounce);
     const url = urlInput.value.trim();
@@ -1652,7 +1652,7 @@ function setupModals() {
 
     // Show loading after short pause
     previewDebounce = setTimeout(() => {
-      setUrlStatus('â³');
+      setUrlStatus('⏳');
       setPreviewLoading();
       probeImageUrl(url);
     }, 600);
@@ -1663,7 +1663,7 @@ function setupModals() {
     if (e.key === 'Escape') closeModal();
   });
 
-  // â”€â”€ Submit â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── Submit ─────────────────────────────────────────────
   submitBtn?.addEventListener('click', commitImage);
 
   function commitImage() {
@@ -1681,7 +1681,7 @@ function setupModals() {
     }
   }
 
-  // â”€â”€ File picker / drop zone â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── File picker / drop zone ────────────────────────────
   filePicker?.addEventListener('change', () => {
     const file = filePicker.files[0];
     if (file) uploadFileToServer(file);
@@ -1713,7 +1713,7 @@ function setupModals() {
     }
   });
 
-  // â”€â”€ Global Ctrl+V paste â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── Global Ctrl+V paste ────────────────────────────────
   document.addEventListener('paste', e => {
     if (!modal.classList.contains('open')) return;
 
@@ -1746,11 +1746,11 @@ function setupModals() {
   });
 }
 
-// â”€â”€ URL probing â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── URL probing ────────────────────────────────────────────────
 function probeImageUrl(url) {
   const img = new Image();
   img.onload = () => {
-    setUrlStatus('âœ…');
+    setUrlStatus('✅');
     pendingImageUrl = url;
     pendingFileType = 'image';
     pendingImageW = img.naturalWidth;
@@ -1759,16 +1759,16 @@ function probeImageUrl(url) {
     setPreviewImage(url, img.naturalWidth, img.naturalHeight);
   };
   img.onerror = () => {
-    setUrlStatus('âŒ');
+    setUrlStatus('❌');
     pendingImageUrl = null;
     document.getElementById('image-submit-btn').disabled = true;
-    setPreviewError('Could not load this URL â€” make sure it\'s a direct image link.');
+    setPreviewError('Could not load this URL — make sure it\'s a direct image link.');
   };
   // Do not use a cache-buster query param, as it breaks signed URLs (like S3/Discord)
   img.src = url;
 }
 
-// â”€â”€ File â†’ Server Upload â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── File → Server Upload ────────────────────────────────────────────
 async function uploadFileToServer(file) {
   if (!file) return;
   if (file.size > 20 * 1024 * 1024) {
@@ -1821,7 +1821,7 @@ async function uploadFileToServer(file) {
   }
 }
 
-// â”€â”€ Preview helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Preview helpers ────────────────────────────────────────────
 function clearPreview() {
   const zone  = document.getElementById('img-preview-zone');
   const inner = document.getElementById('img-preview-inner');
@@ -1835,7 +1835,7 @@ function setPreviewLoading() {
   const inner = document.getElementById('img-preview-inner');
   if (!zone || !inner) return;
   zone.classList.remove('has-preview');
-  inner.innerHTML = '<div class="preview-loading"><div class="spinner"></div> Loadingâ€¦</div>';
+  inner.innerHTML = '<div class="preview-loading"><div class="spinner"></div> Loading…</div>';
 }
 
 function setPreviewImage(src, w, h) {
@@ -1846,7 +1846,7 @@ function setPreviewImage(src, w, h) {
   inner.innerHTML = `
     <div style="text-align:center">
       <img src="${src}" alt="preview">
-      <div class="preview-meta">${w} Ã— ${h} px</div>
+      <div class="preview-meta">${w} × ${h} px</div>
     </div>`;
 }
 
@@ -1857,7 +1857,7 @@ function setPreviewFile(fileName) {
   zone.classList.add('has-preview');
   inner.innerHTML = `
     <div class="preview-file-icon">
-      <div style="font-size: 32px; margin-bottom: 8px;">ðŸ“„</div>
+      <div style="font-size: 32px; margin-bottom: 8px;">📄</div>
       <div style="font-weight: 600; color: var(--text); word-break: break-all;">${fileName}</div>
     </div>`;
 }
@@ -1930,9 +1930,9 @@ function placeFile(url, fileName, w = null, h = null) {
 }
 
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────
 // KEYBOARD SHORTCUTS
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────
 function setupKeyboard() {
   const ignore = e =>
     e.target.tagName === 'TEXTAREA' ||
@@ -1940,7 +1940,7 @@ function setupKeyboard() {
 
   window.addEventListener('keydown', e => {
     if (e.key === ' ' && !ignore(e)) {
-      // â”€â”€ Spacebar on a selected shape â†’ enter text edit â”€â”€
+      // ── Spacebar on a selected shape → enter text edit ──
       if (selectedIds.size === 1) {
         const [selId] = selectedIds;
         const el = elements[selId];
@@ -1954,7 +1954,7 @@ function setupKeyboard() {
         }
       }
 
-      // â”€â”€ Default: spacebar = pan cursor â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+      // ── Default: spacebar = pan cursor ──────────────────
       e.preventDefault();
       isSpaceHeld = true;
       if (!isDraggingElement && !isResizing)
@@ -2004,9 +2004,9 @@ function spawnAtCenter(type) {
   setActiveTool('select');
 }
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────
 // TOAST
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────
 let toastTimer = null;
 function showToast(msg, ms = 2200) {
   toastEl.textContent = msg;
@@ -2015,8 +2015,7 @@ function showToast(msg, ms = 2200) {
   toastTimer = setTimeout(() => toastEl.classList.remove('show'), ms);
 }
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────
 // BOOT
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────
 window.addEventListener('DOMContentLoaded', init);
-
