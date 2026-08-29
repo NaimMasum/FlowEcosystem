@@ -230,13 +230,14 @@ function handleServerMsg(msg) {
       break;
     }
     case 'update': {
-      const el = msg.element;
-      if (!elements[el.id]) return;
-      Object.assign(elements[el.id], el);
-      fixBBox(elements[el.id]);
-      syncNode(elements[el.id]);
-      break;
-    }
+        const el = msg.element;
+        if (!elements[el.id]) return;
+        Object.assign(elements[el.id], el);
+        fixBBox(elements[el.id]);
+        syncNode(elements[el.id]);
+        saveLocalState();
+        break;
+      }
     case 'delete': {
       dropNode(msg.id);
       delete elements[msg.id];
@@ -445,10 +446,11 @@ function buildNoteContent(node, el) {
   ta.addEventListener('blur', exitEditMode);
 
   ta.addEventListener('input', () => {
-    if (elements[el.id]) elements[el.id].text = ta.value;
-    syncPlaceholder();
-    autoGrow();
-  });
+      // Intentionally do NOT update elements[el.id].text here, 
+      // so blur event can detect the change and send the network update!
+      syncPlaceholder();
+      autoGrow();
+    });
 
   // Escape key exits editing
   ta.addEventListener('keydown', e => {
@@ -569,7 +571,7 @@ function buildShapeContent(node, el) {
   ta.addEventListener('pointerdown', e => e.stopPropagation());
   // Keep local state in sync while typing
   ta.addEventListener('input', () => {
-    if (elements[el.id]) elements[el.id].text = ta.value;
+    // Intentionally do not update elements[el.id].text here
   });
   // Exit edit on blur
   ta.addEventListener('blur', exitShapeEdit);
