@@ -126,7 +126,11 @@ wss.on('connection', (ws) => {
       const data = JSON.parse(messageString);
       
       switch (data.type) {
-        case 'add': {
+          case 'ping': {
+            ws.send(JSON.stringify({ type: 'pong' }));
+            break;
+          }
+          case 'add': {
           const { element } = data;
           if (element && element.id) {
             boardState[element.id] = element;
