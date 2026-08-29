@@ -216,10 +216,11 @@ function handleServerMsg(msg) {
       } catch (e) {}
 
       for (const el of Object.values(elements)) {
-        fixBBox(el);
-        mountElement(el);
-      }
-      break;
+          fixBBox(el);
+          mountElement(el);
+        }
+        saveLocalState();
+        break;
     }
     case 'add': {
       const el = msg.element;
