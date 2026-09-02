@@ -33,6 +33,8 @@ let isDraggingCanvas   = false;
 let isDraggingElement  = false;
 let isResizing         = false;
 let isDragSelecting    = false;
+let isDrawingFreehand = false;
+let drawFreehandId = null;
 let isSpaceHeld        = false;
 
 let canvasDragStartClientX = 0;
@@ -1523,6 +1525,7 @@ const toolDefs = [
   { id: 'tool-ellipse', mId: 'm-tool-ellipse', name: 'ellipse' },
   { id: 'tool-line',    mId: 'm-tool-line',    name: 'line'    },
   { id: 'tool-arrow',   mId: 'm-tool-arrow',   name: 'arrow'   },
+  { id: 'tool-draw',    mId: 'm-tool-draw',    name: 'draw'    },
   { id: 'tool-image',   mId: 'm-tool-image',   name: 'image'   },
 ];
 
