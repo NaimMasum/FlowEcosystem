@@ -323,6 +323,8 @@ function buildNode(el, animate) {
     buildImageContent(node, el);
   } else if (el.type === 'file') {
     buildFileContent(node, el);
+  } else if (el.type === 'link') {
+    buildLinkContent(node, el);
   } else {
     buildShapeContent(node, el);
   }
@@ -522,6 +524,77 @@ function buildFileContent(node, el) {
   node.appendChild(inner);
 }
 
+function buildLinkContent(node, el) {
+  node.classList.add('link-element');
+  const inner = document.createElement('div');
+  inner.className = 'link-card-inner';
+
+  if (el.image) {
+    const banner = document.createElement('div');
+    banner.className = 'link-card-banner';
+    banner.style.backgroundImage = `url("${el.image}")`;
+    inner.appendChild(banner);
+  }
+
+  const body = document.createElement('div');
+  body.className = 'link-card-body';
+
+  const header = document.createElement('div');
+  header.className = 'link-card-header';
+
+  if (el.favicon) {
+    const fav = document.createElement('img');
+    fav.className = 'link-card-favicon';
+    fav.src = el.favicon;
+    fav.alt = '';
+    fav.onerror = () => { fav.style.display = 'none'; };
+    header.appendChild(fav);
+  }
+
+  const domain = document.createElement('span');
+  domain.className = 'link-card-domain';
+  try {
+    domain.textContent = el.domain || new URL(el.url).hostname.replace(/^www\./, '');
+  } catch (_) {
+    domain.textContent = el.domain || '';
+  }
+  header.appendChild(domain);
+  body.appendChild(header);
+
+  const title = document.createElement('h3');
+  title.className = 'link-card-title';
+  title.textContent = el.title || el.url || 'Link';
+  body.appendChild(title);
+
+  if (el.description) {
+    const desc = document.createElement('p');
+    desc.className = 'link-card-desc';
+    desc.textContent = el.description;
+    body.appendChild(desc);
+  }
+
+  const footer = document.createElement('div');
+  footer.className = 'link-card-footer';
+
+  const linkBtn = document.createElement('a');
+  linkBtn.className = 'link-card-open';
+  linkBtn.href = el.url || '#';
+  linkBtn.target = '_blank';
+  linkBtn.rel = 'noopener noreferrer';
+  linkBtn.title = 'Open link';
+  linkBtn.innerHTML = `<span>Visit</span> <svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" stroke-width="2.5" fill="none"><path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>`;
+  linkBtn.addEventListener('pointerdown', e => e.stopPropagation());
+
+  footer.appendChild(linkBtn);
+  body.appendChild(footer);
+  inner.appendChild(body);
+  node.appendChild(inner);
+
+  node.addEventListener('dblclick', e => {
+    if (el.url) window.open(el.url, '_blank');
+  });
+}
+
 function buildShapeContent(node, el) {
   // ── SVG layer (the actual drawn shape) ───────────────
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -628,6 +701,8 @@ function syncNode(el) {
   } else if (el.type === 'image') {
     const img = node.querySelector('img');
     if (img) img.src = el.url || '';
+  } else if (el.type === 'file' || el.type === 'link') {
+    // file and link elements do not use SVG
   } else {
     syncNodeSVG(node, el);
     // Sync shape text from remote peer update
@@ -888,14 +963,42 @@ function setupCanvasPointers() {
 
     const items = [...(e.clipboardData?.items || [])];
     const fileItem = items.find(i => i.kind === 'file');
-    if (!fileItem) return;
+    if (fileItem) {
+      e.preventDefault();
+      const blob = fileItem.getAsFile();
+      // Place at canvas centre
+      const r  = viewport.getBoundingClientRect();
+      const cp = clientToWorld(r.width / 2, r.height / 2);
+      uploadAndPlaceFile(blob, cp.x, cp.y);
+      return;
+    }
 
-    e.preventDefault();
-    const blob = fileItem.getAsFile();
-    // Place at canvas centre
-    const r  = viewport.getBoundingClientRect();
-    const cp = clientToWorld(r.width / 2, r.height / 2);
-    uploadAndPlaceFile(blob, cp.x, cp.y);
+    const textItem = items.find(i => i.type === 'text/plain');
+    if (textItem) {
+      textItem.getAsString(async text => {
+        const url = text.trim();
+        if (/^https?:\/\//i.test(url)) {
+          e.preventDefault();
+          showToast('🔗 Fetching link preview...');
+          const r = viewport.getBoundingClientRect();
+          const cp = clientToWorld(r.width / 2, r.height / 2);
+          try {
+            const res = await fetch(`/api/link-preview?url=${encodeURIComponent(url)}`);
+            const data = await res.json();
+            if (data.isImage && data.image) {
+              placeImageAt(data.image, cp.x, cp.y);
+            } else {
+              placeLinkCard(data, cp.x, cp.y);
+            }
+          } catch (_) {
+            try {
+              const parsed = new URL(url);
+              placeLinkCard({ url, title: parsed.hostname, domain: parsed.hostname.replace(/^www\./, '') }, cp.x, cp.y);
+            } catch (err) {}
+          }
+        }
+      });
+    }
   });
 }
 
@@ -1605,8 +1708,9 @@ function setupToolbar() {
 // MODALS — Image insertion with URL, upload, drag-drop, paste
 // ─────────────────────────────────────────────────────────────
 
-// State for the pending image to insert
+// State for the pending image / link to insert
 let pendingImageUrl  = null; // resolved URL/dataURL ready to place
+let pendingLinkData  = null; // parsed link card metadata
 let pendingImageW    = 0;
 let pendingImageH    = 0;
 let pendingFileType  = null;
@@ -1629,6 +1733,7 @@ function setupModals() {
     modal.classList.remove('open');
     clearPreview();
     pendingImageUrl = null;
+    pendingLinkData = null;
     pendingImageW = 0;
     pendingImageH = 0;
     if (urlInput) urlInput.value = '';
@@ -1650,13 +1755,14 @@ function setupModals() {
     });
   });
 
-  // ── URL tab: debounced live preview ────────────────────
+  // ── URL / Link tab: debounced live preview ────────────
   urlInput?.addEventListener('input', () => {
     clearTimeout(previewDebounce);
     const url = urlInput.value.trim();
     setUrlStatus('');
     clearPreview();
     pendingImageUrl = null;
+    pendingLinkData = null;
     submitBtn.disabled = true;
 
     if (!url) return;
@@ -1665,8 +1771,8 @@ function setupModals() {
     previewDebounce = setTimeout(() => {
       setUrlStatus('⏳');
       setPreviewLoading();
-      probeImageUrl(url);
-    }, 600);
+      probeUrl(url);
+    }, 500);
   });
 
   urlInput?.addEventListener('keydown', e => {
@@ -1678,6 +1784,12 @@ function setupModals() {
   submitBtn?.addEventListener('click', commitImage);
 
   function commitImage() {
+    if (pendingFileType === 'link' && pendingLinkData) {
+      const data = pendingLinkData;
+      closeModal();
+      placeLinkCard(data);
+      return;
+    }
     if (!pendingImageUrl) return;
     const url = pendingImageUrl;
     const w = pendingImageW;
@@ -1757,26 +1869,85 @@ function setupModals() {
   });
 }
 
-// ── URL probing ────────────────────────────────────────────────
+// ── URL probing (Images & Link Cards) ──────────────────────────
+function probeUrl(url) {
+  if (/\.(png|jpe?g|gif|webp|svg|ico)($|\?)/i.test(url)) {
+    const img = new Image();
+    img.onload = () => {
+      setUrlStatus('✅');
+      pendingImageUrl = url;
+      pendingFileType = 'image';
+      pendingImageW = img.naturalWidth;
+      pendingImageH = img.naturalHeight;
+      document.getElementById('image-submit-btn').disabled = false;
+      setPreviewImage(url, img.naturalWidth, img.naturalHeight);
+    };
+    img.onerror = () => {
+      fetchLinkPreview(url);
+    };
+    img.src = url;
+    return;
+  }
+
+  fetchLinkPreview(url);
+}
+
 function probeImageUrl(url) {
-  const img = new Image();
-  img.onload = () => {
+  probeUrl(url);
+}
+
+async function fetchLinkPreview(url) {
+  try {
+    const res = await fetch(`/api/link-preview?url=${encodeURIComponent(url)}`);
+    if (!res.ok) throw new Error('Preview fetch failed');
+    const data = await res.json();
+
+    if (data.isImage && data.image) {
+      setUrlStatus('✅');
+      pendingImageUrl = data.image;
+      pendingFileType = 'image';
+      const img = new Image();
+      img.onload = () => {
+        pendingImageW = img.naturalWidth;
+        pendingImageH = img.naturalHeight;
+        document.getElementById('image-submit-btn').disabled = false;
+        setPreviewImage(data.image, img.naturalWidth, img.naturalHeight);
+      };
+      img.onerror = () => {
+        setPreviewLinkCard(data);
+      };
+      img.src = data.image;
+      return;
+    }
+
     setUrlStatus('✅');
-    pendingImageUrl = url;
-    pendingFileType = 'image';
-    pendingImageW = img.naturalWidth;
-    pendingImageH = img.naturalHeight;
+    pendingLinkData = data;
+    pendingFileType = 'link';
     document.getElementById('image-submit-btn').disabled = false;
-    setPreviewImage(url, img.naturalWidth, img.naturalHeight);
-  };
-  img.onerror = () => {
-    setUrlStatus('❌');
-    pendingImageUrl = null;
-    document.getElementById('image-submit-btn').disabled = true;
-    setPreviewError('Could not load this URL — make sure it\'s a direct image link.');
-  };
-  // Do not use a cache-buster query param, as it breaks signed URLs (like S3/Discord)
-  img.src = url;
+    setPreviewLinkCard(data);
+  } catch (err) {
+    try {
+      const parsed = new URL(url.startsWith('http') ? url : `https://${url}`);
+      const fallbackData = {
+        url: parsed.href,
+        domain: parsed.hostname.replace(/^www\./, ''),
+        title: parsed.hostname.replace(/^www\./, ''),
+        description: '',
+        image: '',
+        favicon: `https://www.google.com/s2/favicons?domain=${parsed.hostname}&sz=64`
+      };
+      setUrlStatus('✅');
+      pendingLinkData = fallbackData;
+      pendingFileType = 'link';
+      document.getElementById('image-submit-btn').disabled = false;
+      setPreviewLinkCard(fallbackData);
+    } catch (_) {
+      setUrlStatus('❌');
+      pendingLinkData = null;
+      document.getElementById('image-submit-btn').disabled = true;
+      setPreviewError('Could not load URL — please enter a valid web link.');
+    }
+  }
 }
 
 // ── File → Server Upload ────────────────────────────────────────────
@@ -1839,6 +2010,7 @@ function clearPreview() {
   if (!zone || !inner) return;
   zone.classList.remove('has-preview');
   inner.innerHTML = '<span class="preview-empty">Preview will appear here</span>';
+  pendingLinkData = null;
 }
 
 function setPreviewLoading() {
@@ -1873,6 +2045,34 @@ function setPreviewFile(fileName) {
     </div>`;
 }
 
+function setPreviewLinkCard(data) {
+  const zone  = document.getElementById('img-preview-zone');
+  const inner = document.getElementById('img-preview-inner');
+  if (!zone || !inner) return;
+  zone.classList.add('has-preview');
+
+  const bannerHtml = data.image
+    ? `<div class="link-prev-banner" style="background-image:url('${data.image}')"></div>`
+    : '';
+  const favHtml = data.favicon
+    ? `<img class="link-prev-fav" src="${data.favicon}" alt="" onerror="this.style.display='none'">`
+    : '';
+
+  inner.innerHTML = `
+    <div class="link-preview-card">
+      ${bannerHtml}
+      <div class="link-prev-content">
+        <div class="link-prev-meta">
+          ${favHtml}
+          <span class="link-prev-domain">${data.domain || ''}</span>
+        </div>
+        <div class="link-prev-title">${data.title || data.url}</div>
+        ${data.description ? `<div class="link-prev-desc">${data.description}</div>` : ''}
+      </div>
+    </div>
+  `;
+}
+
 function setPreviewError(msg) {
   const zone  = document.getElementById('img-preview-zone');
   const inner = document.getElementById('img-preview-inner');
@@ -1897,6 +2097,7 @@ function showImageModal() {
   document.querySelector('.img-tab[data-tab="url"]')?.click();
   clearPreview();
   pendingImageUrl = null;
+  pendingLinkData = null;
 
   const input = document.getElementById('image-url-input');
   if (input) input.value = '';
@@ -1938,6 +2139,40 @@ function placeFile(url, fileName, w = null, h = null) {
   const r  = viewport.getBoundingClientRect();
   const wp = clientToWorld(r.width / 2, r.height / 2);
   placeFileAt(url, fileName, wp.x, wp.y, w, h);
+}
+
+function placeLinkCardAt(data, cx, cy) {
+  const w = 320;
+  const h = data.image ? 230 : 130;
+  const id = 'e' + Math.random().toString(36).slice(2, 11);
+
+  const el = {
+    id,
+    type: 'link',
+    url: data.url,
+    title: data.title || data.url,
+    description: data.description || '',
+    image: data.image || '',
+    favicon: data.favicon || '',
+    domain: data.domain || '',
+    x: cx - w / 2,
+    y: cy - h / 2,
+    w,
+    h,
+    zIndex: nextZ(),
+    color: 'blueprint'
+  };
+
+  elements[id] = el;
+  mountElement(el, true);
+  select(id, false);
+  sendOp('add', { element: el });
+}
+
+function placeLinkCard(data, w = null, h = null) {
+  const r  = viewport.getBoundingClientRect();
+  const wp = clientToWorld(r.width / 2, r.height / 2);
+  placeLinkCardAt(data, wp.x, wp.y);
 }
 
 
