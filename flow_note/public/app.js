@@ -9,9 +9,17 @@
 const viewport   = document.getElementById('viewport');
 const world      = document.getElementById('world');
 const statusEl   = document.getElementById('status-indicator');
-const statusDot  = statusEl.querySelector('.status-dot');
-const statusText = statusEl.querySelector('.status-text');
+const statusDot  = statusEl ? statusEl.querySelector('.status-dot') : null;
+const statusText = statusEl ? statusEl.querySelector('.status-text') : null;
 const toastEl    = document.getElementById('toast');
+
+if (statusEl) {
+  statusEl.addEventListener('click', () => {
+    if (window.AndroidBridge && typeof window.AndroidBridge.showServerDialog === 'function') {
+      window.AndroidBridge.showServerDialog();
+    }
+  });
+}
 
 // ── Board state ───────────────────────────────────────────────
 let elements    = {};          // id → element object

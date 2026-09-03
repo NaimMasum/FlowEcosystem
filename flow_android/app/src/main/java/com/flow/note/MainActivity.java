@@ -1,16 +1,24 @@
 package com.flow.note;
 
 import android.app.Activity;
+import android.app.AlertDialog;
+import android.content.DialogInterface;
+import android.content.Intent;
+import android.content.SharedPreferences;
+import android.net.Uri;
 import android.net.wifi.WifiManager;
 import android.os.Bundle;
-import android.content.SharedPreferences;
-import android.text.format.Formatter;
+import android.text.InputType;
 import android.util.Log;
+import android.webkit.JavascriptInterface;
+import android.webkit.ValueCallback;
+import android.webkit.WebChromeClient;
+import android.webkit.WebResourceRequest;
+import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
-import android.webkit.WebResourceRequest;
-import android.webkit.WebResourceResponse;
+import android.widget.EditText;
 import android.widget.Toast;
 
 import org.json.JSONArray;
@@ -20,11 +28,21 @@ import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
+import java.net.Inet4Address;
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
+import java.net.NetworkInterface;
 import java.net.Socket;
 import java.net.URL;
+import java.util.ArrayList;
+import java.util.Enumeration;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Locale;
+import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 public class MainActivity extends Activity {
@@ -32,6 +50,30 @@ public class MainActivity extends Activity {
     private final int NOTE_PORT = 3939;
     private final int PDF_PORT = 4040;
     private AtomicBoolean found = new AtomicBoolean(false);
+    private ValueCallback<Uri[]> mUploadMessage;
+    private final static int FILECHOOSER_RESULTCODE = 1;
+
+    public class WebAppInterface {
+        @JavascriptInterface
+        public void showServerDialog() {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    promptManualIp();
+                }
+            });
+        }
+
+        @JavascriptInterface
+        public void rescan() {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    scanNetwork();
+                }
+            });
+        }
+    }
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -45,6 +87,29 @@ public class MainActivity extends Activity {
         webSettings.setDomStorageEnabled(true);
         webSettings.setAllowFileAccessFromFileURLs(true);
         webSettings.setAllowUniversalAccessFromFileURLs(true);
+        
+        mWebView.addJavascriptInterface(new WebAppInterface(), "AndroidBridge");
+
+        mWebView.setWebChromeClient(new WebChromeClient() {
+            @Override
+            public boolean onShowFileChooser(WebView webView, ValueCallback<Uri[]> filePathCallback, FileChooserParams fileChooserParams) {
+                if (mUploadMessage != null) {
+                    mUploadMessage.onReceiveValue(null);
+                }
+                mUploadMessage = filePathCallback;
+
+                Intent contentSelectionIntent = new Intent(Intent.ACTION_GET_CONTENT);
+                contentSelectionIntent.addCategory(Intent.CATEGORY_OPENABLE);
+                contentSelectionIntent.setType("*/*");
+
+                Intent chooserIntent = new Intent(Intent.ACTION_CHOOSER);
+                chooserIntent.putExtra(Intent.EXTRA_INTENT, contentSelectionIntent);
+                chooserIntent.putExtra(Intent.EXTRA_TITLE, "Choose File");
+
+                startActivityForResult(chooserIntent, FILECHOOSER_RESULTCODE);
+                return true;
+            }
+        });
         
         mWebView.setWebViewClient(new WebViewClient() {
             @Override
@@ -62,13 +127,13 @@ public class MainActivity extends Activity {
                                 if (path.endsWith(".png")) mime = "image/png";
                                 else if (path.endsWith(".jpg") || path.endsWith(".jpeg")) mime = "image/jpeg";
                                 else if (path.endsWith(".pdf")) mime = "application/pdf";
-                                                            WebResourceResponse response = new WebResourceResponse(mime, "UTF-8", new FileInputStream(localFile));
-                            java.util.Map<String, String> headers = new java.util.HashMap<>();
-                            headers.put("Access-Control-Allow-Origin", "*");
-                            headers.put("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-                            headers.put("Access-Control-Allow-Headers", "*");
-                            response.setResponseHeaders(headers);
-                            return response;
+                                WebResourceResponse response = new WebResourceResponse(mime, "UTF-8", new FileInputStream(localFile));
+                                java.util.Map<String, String> headers = new java.util.HashMap<>();
+                                headers.put("Access-Control-Allow-Origin", "*");
+                                headers.put("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+                                headers.put("Access-Control-Allow-Headers", "*");
+                                response.setResponseHeaders(headers);
+                                return response;
                             }
                         } else if (path.equals("/") || path.equals("/index.html")) {
                             InputStream is = getAssets().open("web/index.html");
@@ -94,7 +159,7 @@ public class MainActivity extends Activity {
                         else if (path.endsWith(".png")) mime = "image/png";
                         else if (path.endsWith(".json") || path.endsWith(".map")) mime = "application/json";
                         
-                                                WebResourceResponse response = new WebResourceResponse(mime, "UTF-8", is);
+                        WebResourceResponse response = new WebResourceResponse(mime, "UTF-8", is);
                         java.util.Map<String, String> headers = new java.util.HashMap<>();
                         headers.put("Access-Control-Allow-Origin", "*");
                         headers.put("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
@@ -110,9 +175,6 @@ public class MainActivity extends Activity {
             }
         });
         
-        String loadingHtml = "<html><body style='display:flex;justify-content:center;align-items:center;height:100%;font-family:sans-serif;background:#242424;color:white;text-align:center;'><h2>Scanning Wi-Fi Network<br>for Flow Whiteboard...</h2></body></html>";
-        mWebView.loadData(loadingHtml, "text/html", "UTF-8");
-
         scanNetwork();
     }
 
@@ -129,7 +191,6 @@ public class MainActivity extends Activity {
                     conn.setConnectTimeout(3000);
                     InputStream is = conn.getInputStream();
                     
-                    int size = is.available();
                     byte[] buffer = new byte[1024];
                     StringBuilder sb = new StringBuilder();
                     int read;
@@ -188,87 +249,261 @@ public class MainActivity extends Activity {
         }
     }
 
-    private void scanNetwork() {
-        WifiManager wm = (WifiManager) getApplicationContext().getSystemService(WIFI_SERVICE);
-        int ipAddress = wm.getConnectionInfo().getIpAddress();
-        final SharedPreferences prefs = getSharedPreferences("FlowPrefs", MODE_PRIVATE);
-        final String lastIp = prefs.getString("last_ip", null);
-        
-        if (ipAddress == 0) {
-            runOnUiThread(new Runnable() {
-                @Override
-                public void run() {
-                    if (lastIp != null) {
-                        Toast.makeText(MainActivity.this, "Offline mode. Local files ready.", Toast.LENGTH_LONG).show();
-                        loadApp(lastIp);
-                    } else {
-                        Toast.makeText(MainActivity.this, "Offline mode. Initializing local database...", Toast.LENGTH_LONG).show();
-                        loadApp("127.0.0.1");
+    private Set<String> getSubnetPrefixes() {
+        Set<String> prefixes = new LinkedHashSet<>();
+        try {
+            Enumeration<NetworkInterface> interfaces = NetworkInterface.getNetworkInterfaces();
+            if (interfaces != null) {
+                while (interfaces.hasMoreElements()) {
+                    NetworkInterface iface = interfaces.nextElement();
+                    if (iface.isLoopback() || !iface.isUp()) continue;
+                    Enumeration<InetAddress> addresses = iface.getInetAddresses();
+                    while (addresses.hasMoreElements()) {
+                        InetAddress addr = addresses.nextElement();
+                        if (!addr.isLoopbackAddress() && addr instanceof Inet4Address) {
+                            String host = addr.getHostAddress();
+                            if (host != null && !host.startsWith("127.")) {
+                                int lastDot = host.lastIndexOf('.');
+                                if (lastDot > 0) {
+                                    prefixes.add(host.substring(0, lastDot + 1));
+                                }
+                            }
+                        }
                     }
                 }
-            });
-            return;
+            }
+        } catch (Exception e) {
+            Log.e("FlowApp", "Error discovering subnets", e);
         }
-        
-        @SuppressWarnings("deprecation")
-        String ipString = Formatter.formatIpAddress(ipAddress);
-        final String prefix = ipString.substring(0, ipString.lastIndexOf('.') + 1);
-        
-        ExecutorService executor = Executors.newFixedThreadPool(40);
-        
-        for (int i = 1; i <= 254; i++) {
-            final String targetIp = prefix + i;
+
+        try {
+            WifiManager wm = (WifiManager) getApplicationContext().getSystemService(WIFI_SERVICE);
+            if (wm != null && wm.getConnectionInfo() != null) {
+                int ip = wm.getConnectionInfo().getIpAddress();
+                if (ip != 0) {
+                    String ipStr = String.format(Locale.US, "%d.%d.%d.%d",
+                            (ip & 0xff), (ip >> 8 & 0xff), (ip >> 16 & 0xff), (ip >> 24 & 0xff));
+                    int lastDot = ipStr.lastIndexOf('.');
+                    if (lastDot > 0) prefixes.add(ipStr.substring(0, lastDot + 1));
+                }
+            }
+        } catch (Exception ignored) {}
+
+        return prefixes;
+    }
+
+    private void scanNetwork() {
+        found.set(false);
+        final SharedPreferences prefs = getSharedPreferences("FlowPrefs", MODE_PRIVATE);
+        final String lastIp = prefs.getString("last_ip", null);
+
+        String scanningHtml = "<html><body style='display:flex;flex-direction:column;justify-content:center;align-items:center;height:100%;font-family:sans-serif;background:#242424;color:white;text-align:center;margin:0;padding:20px;box-sizing:border-box;'>"
+                + "<div style='font-size:36px;margin-bottom:16px;'>&#128269;</div>"
+                + "<h2 style='margin:0 0 10px 0;'>Connecting to Flow Whiteboard...</h2>"
+                + "<p style='color:#aaa;margin:0;font-size:14px;'>Searching on current network &amp; Tailscale</p>"
+                + "</body></html>";
+        mWebView.loadData(scanningHtml, "text/html", "UTF-8");
+
+        final ExecutorService executor = Executors.newFixedThreadPool(60);
+
+        // 1. High-priority check for last known IP if available
+        if (lastIp != null && !lastIp.isEmpty()) {
             executor.execute(new Runnable() {
                 @Override
                 public void run() {
-                    if (found.get()) return;
-                    
-                    try {
-                        Socket socket = new Socket();
-                        socket.connect(new InetSocketAddress(targetIp, NOTE_PORT), 600);
-                        socket.close();
-                        
-                        if (found.compareAndSet(false, true)) {
-                            prefs.edit().putString("last_ip", targetIp).apply();
-                            
-                            runOnUiThread(new Runnable() {
-                                @Override
-                                public void run() {
-                                    Toast.makeText(MainActivity.this, "Connected! Syncing files...", Toast.LENGTH_SHORT).show();
-                                    loadApp(targetIp);
-                                    syncOfflineFiles(targetIp);
-                                }
-                            });
-                        }
-                    } catch (Exception e) {}
+                    checkAndConnect(lastIp, "Reconnected to last server", 600);
                 }
             });
         }
-        
+
+        // 2. High-priority check for known Tailscale IP
+        final String tailscaleIp = "100.100.40.92";
+        executor.execute(new Runnable() {
+            @Override
+            public void run() {
+                checkAndConnect(tailscaleIp, "Connected via Tailscale! Syncing...", 1000);
+            }
+        });
+
+        // 3. Discover and scan all active network subnets
+        Set<String> prefixes = getSubnetPrefixes();
+        if (lastIp != null && lastIp.contains(".")) {
+            int lastDot = lastIp.lastIndexOf('.');
+            if (lastDot > 0) prefixes.add(lastIp.substring(0, lastDot + 1));
+        }
+
+        // Build list of target host numbers in prioritized order
+        List<Integer> hostOrder = new ArrayList<>();
+        // Priority 1: Common DHCP pool start (100 to 115)
+        for (int i = 100; i <= 115; i++) hostOrder.add(i);
+        // Priority 2: Low IPs (2 to 30)
+        for (int i = 2; i <= 30; i++) hostOrder.add(i);
+        // Priority 3: Gateway (1)
+        hostOrder.add(1);
+        // Priority 4: Rest of subnet (31 to 99, 116 to 254)
+        for (int i = 31; i <= 99; i++) hostOrder.add(i);
+        for (int i = 116; i <= 254; i++) hostOrder.add(i);
+
+        for (String prefix : prefixes) {
+            for (int hostNum : hostOrder) {
+                final String targetIp = prefix + hostNum;
+                executor.execute(new Runnable() {
+                    @Override
+                    public void run() {
+                        checkAndConnect(targetIp, "Connected via Wi-Fi! Syncing...", 450);
+                    }
+                });
+            }
+        }
+
+        // 4. Fallback handler after scan finishes or times out
         new Thread(new Runnable() {
             @Override
             public void run() {
-                try { Thread.sleep(2000); } catch (Exception e) {}
-                if (!found.get() && lastIp != null) {
+                try {
+                    executor.shutdown();
+                    executor.awaitTermination(3800, TimeUnit.MILLISECONDS);
+                } catch (Exception ignored) {}
+
+                if (!found.get()) {
                     runOnUiThread(new Runnable() {
                         @Override
                         public void run() {
-                            Toast.makeText(MainActivity.this, "Server not found. Local files ready.", Toast.LENGTH_LONG).show();
-                            loadApp(lastIp);
-                        }
-                    });
-                } else if (!found.get()) {
-                    runOnUiThread(new Runnable() {
-                        @Override
-                        public void run() {
-                            Toast.makeText(MainActivity.this, "Server not found. Initializing local database...", Toast.LENGTH_LONG).show();
-                            loadApp("127.0.0.1");
+                            promptManualIp();
                         }
                     });
                 }
             }
         }).start();
-    }    @Override
+    }
+
+    private void checkAndConnect(final String ip, final String successMsg, int timeoutMs) {
+        if (found.get()) return;
+        try {
+            Socket socket = new Socket();
+            socket.connect(new InetSocketAddress(ip, NOTE_PORT), timeoutMs);
+            socket.close();
+
+            if (found.compareAndSet(false, true)) {
+                getSharedPreferences("FlowPrefs", MODE_PRIVATE).edit().putString("last_ip", ip).apply();
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        Toast.makeText(MainActivity.this, successMsg, Toast.LENGTH_SHORT).show();
+                        loadApp(ip);
+                        syncOfflineFiles(ip);
+                    }
+                });
+            }
+        } catch (Exception ignored) {}
+    }
+
+    private void promptManualIp() {
+        final SharedPreferences prefs = getSharedPreferences("FlowPrefs", MODE_PRIVATE);
+        final String lastIp = prefs.getString("last_ip", "");
+        
+        Set<String> prefixes = getSubnetPrefixes();
+        StringBuilder hint = new StringBuilder();
+        if (!prefixes.isEmpty()) {
+            hint.append("Detected subnets: ");
+            for (String p : prefixes) {
+                hint.append(p).append("x ");
+            }
+        }
+
+        AlertDialog.Builder builder = new AlertDialog.Builder(this);
+        builder.setTitle("Connect to Flow Whiteboard");
+        builder.setMessage((hint.length() > 0 ? hint.toString() + "\n\n" : "") + "Enter PC IP Address (e.g. 192.168.0.102):");
+
+        final EditText input = new EditText(this);
+        input.setInputType(InputType.TYPE_CLASS_PHONE | InputType.TYPE_CLASS_TEXT);
+        input.setHint("e.g. 192.168.0.102");
+        if (!lastIp.isEmpty()) {
+            input.setText(lastIp);
+            input.setSelection(input.getText().length());
+        } else if (!prefixes.isEmpty()) {
+            input.setText(prefixes.iterator().next());
+            input.setSelection(input.getText().length());
+        }
+        builder.setView(input);
+
+        builder.setPositiveButton("Connect", new DialogInterface.OnClickListener() {
+            @Override
+            public void onClick(DialogInterface dialog, int which) {
+                final String enteredIp = input.getText().toString().trim();
+                if (!enteredIp.isEmpty()) {
+                    testAndConnect(enteredIp);
+                }
+            }
+        });
+
+        builder.setNeutralButton("Rescan", new DialogInterface.OnClickListener() {
+            @Override
+            public void onClick(DialogInterface dialog, int which) {
+                scanNetwork();
+            }
+        });
+
+        builder.setNegativeButton("Offline Mode", new DialogInterface.OnClickListener() {
+            @Override
+            public void onClick(DialogInterface dialog, int which) {
+                Toast.makeText(MainActivity.this, "Offline mode active.", Toast.LENGTH_SHORT).show();
+                loadApp(lastIp.isEmpty() ? "127.0.0.1" : lastIp);
+            }
+        });
+
+        builder.setCancelable(false);
+        builder.show();
+    }
+
+    private void testAndConnect(final String ip) {
+        Toast.makeText(this, "Testing " + ip + "...", Toast.LENGTH_SHORT).show();
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                boolean reachable = false;
+                try {
+                    Socket socket = new Socket();
+                    socket.connect(new InetSocketAddress(ip, NOTE_PORT), 1500);
+                    socket.close();
+                    reachable = true;
+                } catch (Exception ignored) {}
+
+                final boolean success = reachable;
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (success) {
+                            found.set(true);
+                            getSharedPreferences("FlowPrefs", MODE_PRIVATE).edit().putString("last_ip", ip).apply();
+                            Toast.makeText(MainActivity.this, "Connected to " + ip + "!", Toast.LENGTH_SHORT).show();
+                            loadApp(ip);
+                            syncOfflineFiles(ip);
+                        } else {
+                            Toast.makeText(MainActivity.this, "Could not reach " + ip + ":" + NOTE_PORT + ". Make sure PC server is running!", Toast.LENGTH_LONG).show();
+                            promptManualIp();
+                        }
+                    }
+                });
+            }
+        }).start();
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent intent) {
+        if (requestCode == FILECHOOSER_RESULTCODE) {
+            if (null == mUploadMessage) return;
+            Uri result = intent == null || resultCode != RESULT_OK ? null : intent.getData();
+            if (result != null) {
+                mUploadMessage.onReceiveValue(new Uri[]{result});
+            } else {
+                mUploadMessage.onReceiveValue(null);
+            }
+            mUploadMessage = null;
+        }
+    }
+
+    @Override
     public void onBackPressed() {
         if (mWebView != null && mWebView.canGoBack()) {
             mWebView.goBack();

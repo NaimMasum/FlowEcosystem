@@ -79,6 +79,17 @@ app.put('/uploads/:filename', express.raw({ type: '*/*', limit: '50mb' }), (req,
 });
 
 app.use('/uploads', express.static(UPLOADS_DIR));
+
+app.get('/api/files', (req, res) => {
+  try {
+    const files = fs.readdirSync(UPLOADS_DIR);
+    res.json(files);
+  } catch (err) {
+    console.error('Failed to list files:', err);
+    res.json([]);
+  }
+});
+
 app.use(express.json({ limit: '50mb' }));
 
 app.post('/upload', (req, res) => {
