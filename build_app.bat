@@ -1,6 +1,6 @@
-﻿@echo off
+@echo off
 echo ========================================================
-echo Building Flow Note Android APK & Deploying to Server...
+echo Building Flow Note Android APK and Deploying to Server...
 echo ========================================================
 cd flow_android
 call gradlew.bat assembleDebug
