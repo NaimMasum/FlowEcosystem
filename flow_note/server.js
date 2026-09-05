@@ -117,39 +117,6 @@ app.get('/api/app-version', (req, res) => {
   }
 });
 
-function getGitBranch() {
-  try {
-    let gitPath = path.join(__dirname, '..', '.git');
-    if (fs.existsSync(gitPath)) {
-      if (fs.statSync(gitPath).isFile()) {
-        const content = fs.readFileSync(gitPath, 'utf8').trim();
-        if (content.startsWith('gitdir:')) {
-          gitPath = content.replace(/^gitdir:\s*/, '').trim();
-        }
-      }
-      const headPath = path.join(gitPath, 'HEAD');
-      if (fs.existsSync(headPath)) {
-        const head = fs.readFileSync(headPath, 'utf8').trim();
-        if (head.startsWith('ref: refs/heads/')) {
-          return head.replace('ref: refs/heads/', '');
-        }
-        return head.slice(0, 7);
-      }
-    }
-  } catch (_) {}
-  return process.env.BRANCH_NAME || 'master';
-}
-
-// Server & branch info endpoint for Android app discovery & switching
-app.get('/api/server-info', (req, res) => {
-  res.json({
-    name: process.env.SERVER_NAME || 'Flow Whiteboard',
-    branch: getGitBranch(),
-    port: PORT,
-    version: '1.0.0'
-  });
-});
-
 // Link preview scraper endpoint
 app.get('/api/link-preview', async (req, res) => {
   const targetUrl = req.query.url;
