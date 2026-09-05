@@ -193,7 +193,7 @@
       <div class="modal-content img-modal-content">
 
         <div class="modal-header">
-          <h2 class="modal-title">Add File / Image</h2>
+          <h2 class="modal-title">Insert Link, Image or File</h2>
           <button class="modal-close" id="image-cancel-btn" aria-label="Cancel">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" width="18" height="18"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
           </button>
@@ -203,21 +203,22 @@
         <div class="img-tabs">
           <button class="img-tab active" data-tab="url">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="14" height="14"><path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71"/></svg>
-            URL
+            Link / URL
           </button>
           <button class="img-tab" data-tab="upload">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="14" height="14"><polyline points="16 16 12 12 8 16"/><line x1="12" y1="12" x2="12" y2="21"/><path d="M20.39 18.39A5 5 0 0018 9h-1.26A8 8 0 103 16.3"/></svg>
-            Upload
+            Upload File
           </button>
         </div>
 
-        <!-- URL tab -->
+        <!-- URL / Link tab -->
         <div class="img-tab-panel" id="tab-url">
           <div class="url-input-row">
             <input type="url" id="image-url-input" class="modal-input url-input"
-              placeholder="https://example.com/photo.jpg or document.pdf" autocomplete="off" spellcheck="false">
+              placeholder="Paste any link or image: https://github.com, article, photo.jpg" autocomplete="off" spellcheck="false">
             <span class="url-status" id="url-status"></span>
           </div>
+          <div class="url-hint-text">Paste any webpage link to insert a Link Card with live preview, or direct image URL.</div>
         </div>
 
         <!-- Upload/drop tab -->

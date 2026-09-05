@@ -79,6 +79,107 @@ app.put('/uploads/:filename', express.raw({ type: '*/*', limit: '50mb' }), (req,
 });
 
 app.use('/uploads', express.static(UPLOADS_DIR));
+
+app.get('/api/files', (req, res) => {
+  try {
+    const files = fs.readdirSync(UPLOADS_DIR);
+    res.json(files);
+  } catch (err) {
+    console.error('Failed to list files:', err);
+    res.json([]);
+  }
+});
+
+// Link preview scraper endpoint
+app.get('/api/link-preview', async (req, res) => {
+  const targetUrl = req.query.url;
+  if (!targetUrl) return res.status(400).json({ error: 'Missing url parameter' });
+
+  let validUrl;
+  try {
+    const raw = String(targetUrl).trim();
+    validUrl = new URL(raw.startsWith('http://') || raw.startsWith('https://') ? raw : `https://${raw}`);
+  } catch (e) {
+    return res.status(400).json({ error: 'Invalid URL' });
+  }
+
+  const hostname = validUrl.hostname.replace(/^www\./, '');
+  const result = {
+    url: validUrl.href,
+    domain: hostname,
+    title: hostname,
+    description: '',
+    image: '',
+    favicon: `https://www.google.com/s2/favicons?domain=${hostname}&sz=64`,
+    isImage: false
+  };
+
+  // Check direct image extension first
+  if (/\.(png|jpe?g|gif|webp|svg|ico)($|\?)/i.test(validUrl.pathname)) {
+    result.image = validUrl.href;
+    result.isImage = true;
+    return res.json(result);
+  }
+
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 4500);
+
+    const response = await fetch(validUrl.href, {
+      signal: controller.signal,
+      redirect: 'follow',
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
+      }
+    });
+    clearTimeout(timeout);
+
+    const contentType = response.headers.get('content-type') || '';
+    if (contentType.includes('image/')) {
+      result.image = validUrl.href;
+      result.isImage = true;
+      return res.json(result);
+    }
+
+    const html = await response.text();
+
+    const getMeta = (propName) => {
+      const regex1 = new RegExp(`<meta[^>]+(?:property|name)=["']${propName}["'][^>]*content=["']([^"']*)["']`, 'i');
+      const regex2 = new RegExp(`<meta[^>]+content=["']([^"']*)["'][^>]+(?:property|name)=["']${propName}["']`, 'i');
+      const m = html.match(regex1) || html.match(regex2);
+      return m ? m[1].trim() : null;
+    };
+
+    const titleTag = html.match(/<title[^>]*>([^<]*)<\/title>/i);
+    const title = getMeta('og:title') || getMeta('twitter:title') || (titleTag ? titleTag[1].trim() : null);
+    if (title) result.title = title;
+
+    const desc = getMeta('og:description') || getMeta('twitter:description') || getMeta('description');
+    if (desc) result.description = desc;
+
+    let img = getMeta('og:image') || getMeta('twitter:image');
+    if (img) {
+      if (!img.startsWith('http') && !img.startsWith('data:')) {
+        try { img = new URL(img, validUrl.href).href; } catch (_) {}
+      }
+      result.image = img;
+    }
+
+    const favMatch = html.match(/<link[^>]+rel=["'](?:shortcut )?icon["'][^>]+href=["']([^"']*)["']/i) ||
+                     html.match(/<link[^>]+href=["']([^"']*)["'][^>]+rel=["'](?:shortcut )?icon["']/i);
+    if (favMatch && favMatch[1]) {
+      try {
+        result.favicon = new URL(favMatch[1], validUrl.href).href;
+      } catch (_) {}
+    }
+
+    res.json(result);
+  } catch (err) {
+    res.json(result);
+  }
+});
+
 app.use(express.json({ limit: '50mb' }));
 
 app.post('/upload', (req, res) => {
