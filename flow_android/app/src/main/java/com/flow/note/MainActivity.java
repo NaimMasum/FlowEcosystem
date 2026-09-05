@@ -2,12 +2,16 @@ package com.flow.note;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.app.ProgressDialog;
 import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.pm.PackageInfo;
 import android.net.Uri;
 import android.net.wifi.WifiManager;
+import android.os.Build;
 import android.os.Bundle;
+import android.provider.Settings;
 import android.text.InputType;
 import android.util.Log;
 import android.webkit.JavascriptInterface;
@@ -18,10 +22,6 @@ import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
-import android.app.ProgressDialog;
-import android.content.pm.PackageInfo;
-import android.os.Build;
-import android.provider.Settings;
 import android.widget.EditText;
 import android.widget.Toast;
 
@@ -40,7 +40,9 @@ import java.net.NetworkInterface;
 import java.net.Socket;
 import java.net.URL;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Enumeration;
+import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
@@ -52,12 +54,72 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 public class MainActivity extends Activity {
     private WebView mWebView;
-    private final int NOTE_PORT = 3939;
+    private final int DEFAULT_PORT = 3939;
+    private final int[] CANDIDATE_PORTS = new int[] { 3939, 3940, 3941, 3942 };
     private final int PDF_PORT = 4040;
     private AtomicBoolean found = new AtomicBoolean(false);
     private ValueCallback<Uri[]> mUploadMessage;
     private final static int FILECHOOSER_RESULTCODE = 1;
     private final static int INSTALL_PERMISSION_REQUEST_CODE = 1002;
+
+    public static class ServerEntry {
+        public String ip;
+        public int port;
+        public String branch;
+        public String name;
+        public String version;
+
+        public ServerEntry(String ip, int port, String branch, String name, String version) {
+            this.ip = ip;
+            this.port = port;
+            this.branch = (branch != null && !branch.isEmpty()) ? branch : "unknown";
+            this.name = (name != null && !name.isEmpty()) ? name : "Flow Whiteboard";
+            this.version = (version != null) ? version : "";
+        }
+    }
+
+    private int getConnectedPort() {
+        return getSharedPreferences("FlowPrefs", MODE_PRIVATE).getInt("last_port", DEFAULT_PORT);
+    }
+
+    private String getConnectedIp() {
+        return getSharedPreferences("FlowPrefs", MODE_PRIVATE).getString("last_ip", "");
+    }
+
+    private void setConnectedServer(String ip, int port, String branch) {
+        SharedPreferences.Editor editor = getSharedPreferences("FlowPrefs", MODE_PRIVATE).edit();
+        editor.putString("last_ip", ip);
+        editor.putInt("last_port", port);
+        if (branch != null && !branch.isEmpty()) {
+            editor.putString("last_branch", branch);
+        }
+        editor.apply();
+    }
+
+    private ServerEntry fetchServerInfo(String ip, int port, int timeoutMs) {
+        try {
+            URL url = new URL("http://" + ip + ":" + port + "/api/server-info");
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            conn.setConnectTimeout(timeoutMs);
+            conn.setReadTimeout(timeoutMs);
+            if (conn.getResponseCode() == 200) {
+                InputStream is = conn.getInputStream();
+                byte[] buffer = new byte[1024];
+                StringBuilder sb = new StringBuilder();
+                int read;
+                while ((read = is.read(buffer)) != -1) {
+                    sb.append(new String(buffer, 0, read));
+                }
+                is.close();
+                JSONObject json = new JSONObject(sb.toString());
+                String branch = json.optString("branch", "unknown");
+                String name = json.optString("name", "Flow Whiteboard");
+                String version = json.optString("version", "");
+                return new ServerEntry(ip, port, branch, name, version);
+            }
+        } catch (Exception ignored) {}
+        return null;
+    }
 
     public class WebAppInterface {
         @JavascriptInterface
@@ -85,9 +147,10 @@ public class MainActivity extends Activity {
             runOnUiThread(new Runnable() {
                 @Override
                 public void run() {
-                    String lastIp = getSharedPreferences("FlowPrefs", MODE_PRIVATE).getString("last_ip", "");
+                    String lastIp = getConnectedIp();
+                    int lastPort = getConnectedPort();
                     if (!lastIp.isEmpty()) {
-                        checkAppUpdate(lastIp, true);
+                        checkAppUpdate(lastIp, lastPort, true);
                     } else {
                         Toast.makeText(MainActivity.this, "Please connect to a server first", Toast.LENGTH_SHORT).show();
                     }
@@ -139,8 +202,19 @@ public class MainActivity extends Activity {
                 String path = request.getUrl().getPath();
                 
                 try {
-                    // Intercept Flow Note (3939)
-                    if (url.contains(":" + NOTE_PORT)) {
+                    // Check if request targets Note server on current or candidate ports
+                    int connectedPort = getConnectedPort();
+                    boolean isNotePort = url.contains(":" + connectedPort);
+                    if (!isNotePort) {
+                        for (int p : CANDIDATE_PORTS) {
+                            if (url.contains(":" + p)) {
+                                isNotePort = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (isNotePort) {
                         if (path.startsWith("/uploads/")) {
                             File localFile = new File(getFilesDir() + path);
                             if (localFile.exists()) {
@@ -168,7 +242,7 @@ public class MainActivity extends Activity {
                         }
                     }
                     
-                    // Intercept Flow PDF Viewer (3940)
+                    // Intercept Flow PDF Viewer (4040)
                     if (url.contains(":" + PDF_PORT)) {
                         String assetPath = "pdf" + (path.equals("/") ? "/web/viewer.html" : path);
                         InputStream is = getAssets().open(assetPath);
@@ -199,7 +273,7 @@ public class MainActivity extends Activity {
         scanNetwork();
     }
 
-    private void syncOfflineFiles(final String ip) {
+    private void syncOfflineFiles(final String ip, final int port) {
         new Thread(new Runnable() {
             @Override
             public void run() {
@@ -207,7 +281,7 @@ public class MainActivity extends Activity {
                     File uploadsDir = new File(getFilesDir(), "uploads");
                     if (!uploadsDir.exists()) uploadsDir.mkdirs();
 
-                    URL url = new URL("http://" + ip + ":" + NOTE_PORT + "/api/files");
+                    URL url = new URL("http://" + ip + ":" + port + "/api/files");
                     HttpURLConnection conn = (HttpURLConnection) url.openConnection();
                     conn.setConnectTimeout(3000);
                     InputStream is = conn.getInputStream();
@@ -225,7 +299,7 @@ public class MainActivity extends Activity {
                         String filename = files.getString(i);
                         File localFile = new File(uploadsDir, filename);
                         if (!localFile.exists()) {
-                            URL fileUrl = new URL("http://" + ip + ":" + NOTE_PORT + "/uploads/" + filename);
+                            URL fileUrl = new URL("http://" + ip + ":" + port + "/uploads/" + filename);
                             HttpURLConnection fileConn = (HttpURLConnection) fileUrl.openConnection();
                             InputStream fileIs = fileConn.getInputStream();
                             FileOutputStream fos = new FileOutputStream(localFile);
@@ -247,8 +321,8 @@ public class MainActivity extends Activity {
                         }
                     });
 
-                    // Automatically check if an updated APK is available on the server
-                    checkAppUpdate(ip, false);
+                    // Automatically check if an updated APK is available on this branch server
+                    checkAppUpdate(ip, port, false);
                 } catch (Exception e) {
                     Log.e("FlowApp", "Sync error", e);
                 }
@@ -256,7 +330,7 @@ public class MainActivity extends Activity {
         }).start();
     }
 
-    private void loadApp(String ip) {
+    private void loadApp(String ip, int port) {
         try {
             InputStream is = getAssets().open("web/index.html");
             int size = is.available();
@@ -265,11 +339,11 @@ public class MainActivity extends Activity {
             is.close();
             String html = new String(buffer, "UTF-8");
             
-            String baseUrl = "http://" + ip + ":" + NOTE_PORT + "/";
+            String baseUrl = "http://" + ip + ":" + port + "/";
             mWebView.loadDataWithBaseURL(baseUrl, html, "text/html", "UTF-8", null);
         } catch (Exception e) {
             Log.e("FlowApp", "Failed to load local HTML", e);
-            mWebView.loadUrl("http://" + ip + ":" + NOTE_PORT);
+            mWebView.loadUrl("http://" + ip + ":" + port);
         }
     }
 
@@ -318,34 +392,52 @@ public class MainActivity extends Activity {
 
     private void scanNetwork() {
         found.set(false);
-        final SharedPreferences prefs = getSharedPreferences("FlowPrefs", MODE_PRIVATE);
-        final String lastIp = prefs.getString("last_ip", null);
+        final String lastIp = getConnectedIp();
+        final int lastPort = getConnectedPort();
 
         String scanningHtml = "<html><body style='display:flex;flex-direction:column;justify-content:center;align-items:center;height:100%;font-family:sans-serif;background:#242424;color:white;text-align:center;margin:0;padding:20px;box-sizing:border-box;'>"
                 + "<div style='font-size:36px;margin-bottom:16px;'>&#128269;</div>"
                 + "<h2 style='margin:0 0 10px 0;'>Connecting to Flow Whiteboard...</h2>"
-                + "<p style='color:#aaa;margin:0;font-size:14px;'>Searching on current network &amp; Tailscale</p>"
+                + "<p style='color:#aaa;margin:0;font-size:14px;'>Searching running branch servers on network &amp; Tailscale</p>"
                 + "</body></html>";
         mWebView.loadData(scanningHtml, "text/html", "UTF-8");
 
         final ExecutorService executor = Executors.newFixedThreadPool(60);
 
-        // 1. High-priority check for last known IP if available
-        if (lastIp != null && !lastIp.isEmpty()) {
+        // 1. High-priority check for last known IP and port
+        if (!lastIp.isEmpty()) {
             executor.execute(new Runnable() {
                 @Override
                 public void run() {
-                    checkAndConnect(lastIp, "Reconnected to last server", 600);
+                    checkAndConnect(lastIp, lastPort, "Reconnected to last server", 600);
                 }
             });
+
+            // Also probe other candidate ports on last known IP
+            for (final int p : CANDIDATE_PORTS) {
+                if (p != lastPort) {
+                    executor.execute(new Runnable() {
+                        @Override
+                        public void run() {
+                            checkAndConnect(lastIp, p, "Connected to server on port " + p, 500);
+                        }
+                    });
+                }
+            }
         }
 
-        // 2. High-priority check for known Tailscale IP
+        // 2. High-priority check for known Tailscale IP across ports
         final String tailscaleIp = "100.100.40.92";
         executor.execute(new Runnable() {
             @Override
             public void run() {
-                checkAndConnect(tailscaleIp, "Connected via Tailscale! Syncing...", 1000);
+                checkAndConnect(tailscaleIp, lastPort, "Connected via Tailscale!", 1000);
+            }
+        });
+        executor.execute(new Runnable() {
+            @Override
+            public void run() {
+                checkAndConnect(tailscaleIp, DEFAULT_PORT, "Connected via Tailscale!", 1000);
             }
         });
 
@@ -356,27 +448,24 @@ public class MainActivity extends Activity {
             if (lastDot > 0) prefixes.add(lastIp.substring(0, lastDot + 1));
         }
 
-        // Build list of target host numbers in prioritized order
         List<Integer> hostOrder = new ArrayList<>();
-        // Priority 1: Common DHCP pool start (100 to 115)
         for (int i = 100; i <= 115; i++) hostOrder.add(i);
-        // Priority 2: Low IPs (2 to 30)
         for (int i = 2; i <= 30; i++) hostOrder.add(i);
-        // Priority 3: Gateway (1)
         hostOrder.add(1);
-        // Priority 4: Rest of subnet (31 to 99, 116 to 254)
         for (int i = 31; i <= 99; i++) hostOrder.add(i);
         for (int i = 116; i <= 254; i++) hostOrder.add(i);
 
         for (String prefix : prefixes) {
             for (int hostNum : hostOrder) {
                 final String targetIp = prefix + hostNum;
-                executor.execute(new Runnable() {
-                    @Override
-                    public void run() {
-                        checkAndConnect(targetIp, "Connected via Wi-Fi! Syncing...", 450);
-                    }
-                });
+                for (final int portToScan : new int[] { DEFAULT_PORT, 3940 }) {
+                    executor.execute(new Runnable() {
+                        @Override
+                        public void run() {
+                            checkAndConnect(targetIp, portToScan, "Connected via Wi-Fi!", 450);
+                        }
+                    });
+                }
             }
         }
 
@@ -401,21 +490,28 @@ public class MainActivity extends Activity {
         }).start();
     }
 
-    private void checkAndConnect(final String ip, final String successMsg, int timeoutMs) {
+    private void checkAndConnect(final String ip, final int port, final String successMsg, int timeoutMs) {
         if (found.get()) return;
         try {
             Socket socket = new Socket();
-            socket.connect(new InetSocketAddress(ip, NOTE_PORT), timeoutMs);
+            socket.connect(new InetSocketAddress(ip, port), timeoutMs);
             socket.close();
 
             if (found.compareAndSet(false, true)) {
-                getSharedPreferences("FlowPrefs", MODE_PRIVATE).edit().putString("last_ip", ip).apply();
+                ServerEntry entry = fetchServerInfo(ip, port, 1000);
+                final String branch = (entry != null && entry.branch != null) ? entry.branch : "";
+                setConnectedServer(ip, port, branch);
+
                 runOnUiThread(new Runnable() {
                     @Override
                     public void run() {
-                        Toast.makeText(MainActivity.this, successMsg, Toast.LENGTH_SHORT).show();
-                        loadApp(ip);
-                        syncOfflineFiles(ip);
+                        String msg = successMsg;
+                        if (!branch.isEmpty()) {
+                            msg = "Connected: [" + branch + "] (" + ip + ":" + port + ")";
+                        }
+                        Toast.makeText(MainActivity.this, msg, Toast.LENGTH_SHORT).show();
+                        loadApp(ip, port);
+                        syncOfflineFiles(ip, port);
                     }
                 });
             }
@@ -423,15 +519,18 @@ public class MainActivity extends Activity {
     }
 
     private void promptManualIp() {
-        final SharedPreferences prefs = getSharedPreferences("FlowPrefs", MODE_PRIVATE);
-        final String lastIp = prefs.getString("last_ip", "");
+        final String lastIp = getConnectedIp();
+        final int lastPort = getConnectedPort();
+        final String lastBranch = getSharedPreferences("FlowPrefs", MODE_PRIVATE).getString("last_branch", "");
 
         AlertDialog.Builder builder = new AlertDialog.Builder(this);
         builder.setTitle("Flow Whiteboard Menu");
 
-        String connectLabel = lastIp.isEmpty() ? "🔌 Connect to IP" : "🔌 Connect to " + lastIp;
+        String currentLabel = lastIp.isEmpty() ? "🔌 Connect to IP:Port" : "🔌 Connect to " + lastIp + ":" + lastPort + (lastBranch.isEmpty() ? "" : " [" + lastBranch + "]");
+        
         String[] options = new String[] {
-            connectLabel,
+            "🔀 Switch Server / Branch",
+            currentLabel,
             "🚀 Check for App Update",
             "🔍 Rescan Local Network",
             "📴 Offline Mode"
@@ -441,19 +540,21 @@ public class MainActivity extends Activity {
             @Override
             public void onClick(DialogInterface dialog, int which) {
                 if (which == 0) {
-                    promptEnterIp();
+                    scanAndSelectBranchServer();
                 } else if (which == 1) {
+                    promptEnterIp();
+                } else if (which == 2) {
                     if (!lastIp.isEmpty()) {
-                        checkAppUpdate(lastIp, true);
+                        checkAppUpdate(lastIp, lastPort, true);
                     } else {
                         Toast.makeText(MainActivity.this, "Please connect to a server first", Toast.LENGTH_SHORT).show();
                         promptEnterIp();
                     }
-                } else if (which == 2) {
-                    scanNetwork();
                 } else if (which == 3) {
+                    scanNetwork();
+                } else if (which == 4) {
                     Toast.makeText(MainActivity.this, "Offline mode active.", Toast.LENGTH_SHORT).show();
-                    loadApp(lastIp.isEmpty() ? "127.0.0.1" : lastIp);
+                    loadApp(lastIp.isEmpty() ? "127.0.0.1" : lastIp, lastPort);
                 }
             }
         });
@@ -462,9 +563,165 @@ public class MainActivity extends Activity {
         builder.show();
     }
 
+    private void scanAndSelectBranchServer() {
+        final ProgressDialog progressDialog = new ProgressDialog(this);
+        progressDialog.setTitle("Scanning Branches...");
+        progressDialog.setMessage("Detecting running Flow servers & branches...");
+        progressDialog.setIndeterminate(true);
+        progressDialog.setCancelable(true);
+        progressDialog.show();
+
+        final List<ServerEntry> discovered = Collections.synchronizedList(new ArrayList<ServerEntry>());
+        final ExecutorService exec = Executors.newFixedThreadPool(30);
+
+        // 1. Probe lastIp on all candidate ports
+        final String lastIp = getConnectedIp();
+        if (!lastIp.isEmpty()) {
+            for (int port : CANDIDATE_PORTS) {
+                final int p = port;
+                exec.execute(new Runnable() {
+                    @Override
+                    public void run() {
+                        ServerEntry entry = probeServer(lastIp, p, 700);
+                        if (entry != null) discovered.add(entry);
+                    }
+                });
+            }
+        }
+
+        // 2. Probe Tailscale IP on candidate ports
+        final String tailscaleIp = "100.100.40.92";
+        for (int port : CANDIDATE_PORTS) {
+            final int p = port;
+            exec.execute(new Runnable() {
+                @Override
+                public void run() {
+                    ServerEntry entry = probeServer(tailscaleIp, p, 1000);
+                    if (entry != null) discovered.add(entry);
+                }
+            });
+        }
+
+        // 3. Probe active subnets on ports 3939 & 3940
+        Set<String> prefixes = getSubnetPrefixes();
+        if (lastIp != null && lastIp.contains(".")) {
+            int lastDot = lastIp.lastIndexOf('.');
+            if (lastDot > 0) prefixes.add(lastIp.substring(0, lastDot + 1));
+        }
+
+        List<Integer> hostOrder = new ArrayList<>();
+        for (int i = 100; i <= 115; i++) hostOrder.add(i);
+        for (int i = 2; i <= 30; i++) hostOrder.add(i);
+        hostOrder.add(1);
+        for (int i = 31; i <= 99; i++) hostOrder.add(i);
+        for (int i = 116; i <= 254; i++) hostOrder.add(i);
+
+        for (String prefix : prefixes) {
+            for (int hostNum : hostOrder) {
+                final String targetIp = prefix + hostNum;
+                if (targetIp.equals(lastIp)) continue;
+                exec.execute(new Runnable() {
+                    @Override
+                    public void run() {
+                        for (int p : new int[] { DEFAULT_PORT, 3940 }) {
+                            ServerEntry entry = probeServer(targetIp, p, 400);
+                            if (entry != null) {
+                                discovered.add(entry);
+                                break;
+                            }
+                        }
+                    }
+                });
+            }
+        }
+
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    exec.shutdown();
+                    exec.awaitTermination(3500, TimeUnit.MILLISECONDS);
+                } catch (Exception ignored) {}
+
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (progressDialog.isShowing()) {
+                            progressDialog.dismiss();
+                        }
+                        if (discovered.isEmpty()) {
+                            Toast.makeText(MainActivity.this, "No running branch servers found.", Toast.LENGTH_SHORT).show();
+                            promptEnterIp();
+                        } else {
+                            showBranchSelectionDialog(discovered);
+                        }
+                    }
+                });
+            }
+        }).start();
+    }
+
+    private ServerEntry probeServer(String ip, int port, int timeoutMs) {
+        try {
+            Socket socket = new Socket();
+            socket.connect(new InetSocketAddress(ip, port), timeoutMs);
+            socket.close();
+            ServerEntry entry = fetchServerInfo(ip, port, timeoutMs + 500);
+            if (entry != null) return entry;
+            return new ServerEntry(ip, port, port == DEFAULT_PORT ? "master" : "port " + port, "Flow Whiteboard", "");
+        } catch (Exception ignored) {}
+        return null;
+    }
+
+    private void showBranchSelectionDialog(final List<ServerEntry> servers) {
+        final List<ServerEntry> uniqueList = new ArrayList<>();
+        Set<String> seen = new HashSet<>();
+        for (ServerEntry s : servers) {
+            String key = s.ip + ":" + s.port;
+            if (seen.add(key)) {
+                uniqueList.add(s);
+            }
+        }
+
+        String currentIp = getConnectedIp();
+        int currentPort = getConnectedPort();
+
+        String[] itemLabels = new String[uniqueList.size() + 1];
+        for (int i = 0; i < uniqueList.size(); i++) {
+            ServerEntry s = uniqueList.get(i);
+            boolean isCurrent = s.ip.equals(currentIp) && s.port == currentPort;
+            itemLabels[i] = "🌿 " + s.branch + "  (" + s.ip + ":" + s.port + ")" + (isCurrent ? "  ★ Current" : "");
+        }
+        itemLabels[uniqueList.size()] = "➕ Custom IP:Port...";
+
+        AlertDialog.Builder builder = new AlertDialog.Builder(this);
+        builder.setTitle("Select Running Branch");
+        builder.setItems(itemLabels, new DialogInterface.OnClickListener() {
+            @Override
+            public void onClick(DialogInterface dialog, int which) {
+                if (which < uniqueList.size()) {
+                    ServerEntry selected = uniqueList.get(which);
+                    connectToSelectedServer(selected);
+                } else {
+                    promptEnterIp();
+                }
+            }
+        });
+        builder.setNegativeButton("Cancel", null);
+        builder.show();
+    }
+
+    private void connectToSelectedServer(ServerEntry entry) {
+        found.set(true);
+        setConnectedServer(entry.ip, entry.port, entry.branch);
+        Toast.makeText(this, "Connecting to [" + entry.branch + "] on port " + entry.port + "...", Toast.LENGTH_SHORT).show();
+        loadApp(entry.ip, entry.port);
+        syncOfflineFiles(entry.ip, entry.port);
+    }
+
     private void promptEnterIp() {
-        final SharedPreferences prefs = getSharedPreferences("FlowPrefs", MODE_PRIVATE);
-        final String lastIp = prefs.getString("last_ip", "");
+        final String lastIp = getConnectedIp();
+        final int lastPort = getConnectedPort();
 
         Set<String> prefixes = getSubnetPrefixes();
         StringBuilder hint = new StringBuilder();
@@ -476,14 +733,15 @@ public class MainActivity extends Activity {
         }
 
         AlertDialog.Builder builder = new AlertDialog.Builder(this);
-        builder.setTitle("Connect to Server");
-        builder.setMessage((hint.length() > 0 ? hint.toString() + "\n\n" : "") + "Enter PC IP Address (e.g. 192.168.0.102):");
+        builder.setTitle("Connect to Server / Branch");
+        builder.setMessage((hint.length() > 0 ? hint.toString() + "\n\n" : "") + "Enter PC IP and optional Port (e.g. 192.168.0.102:3939 or 192.168.0.102:3940):");
 
         final EditText input = new EditText(this);
         input.setInputType(InputType.TYPE_CLASS_PHONE | InputType.TYPE_CLASS_TEXT);
-        input.setHint("e.g. 192.168.0.102");
+        input.setHint("192.168.0.102:3939");
         if (!lastIp.isEmpty()) {
-            input.setText(lastIp);
+            String prefill = lastIp + (lastPort != DEFAULT_PORT ? ":" + lastPort : "");
+            input.setText(prefill);
             input.setSelection(input.getText().length());
         } else if (!prefixes.isEmpty()) {
             input.setText(prefixes.iterator().next());
@@ -494,17 +752,28 @@ public class MainActivity extends Activity {
         builder.setPositiveButton("Connect", new DialogInterface.OnClickListener() {
             @Override
             public void onClick(DialogInterface dialog, int which) {
-                final String enteredIp = input.getText().toString().trim();
-                if (!enteredIp.isEmpty()) {
-                    testAndConnect(enteredIp);
+                final String raw = input.getText().toString().trim();
+                if (!raw.isEmpty()) {
+                    String ip = raw;
+                    int port = DEFAULT_PORT;
+                    if (raw.contains(":")) {
+                        String[] parts = raw.split(":");
+                        ip = parts[0].trim();
+                        try {
+                            port = Integer.parseInt(parts[1].trim());
+                        } catch (Exception ignored) {
+                            port = DEFAULT_PORT;
+                        }
+                    }
+                    testAndConnect(ip, port);
                 }
             }
         });
 
-        builder.setNeutralButton("Rescan", new DialogInterface.OnClickListener() {
+        builder.setNeutralButton("Branches", new DialogInterface.OnClickListener() {
             @Override
             public void onClick(DialogInterface dialog, int which) {
-                scanNetwork();
+                scanAndSelectBranchServer();
             }
         });
 
@@ -512,31 +781,34 @@ public class MainActivity extends Activity {
         builder.show();
     }
 
-    private void testAndConnect(final String ip) {
-        Toast.makeText(this, "Testing " + ip + "...", Toast.LENGTH_SHORT).show();
+    private void testAndConnect(final String ip, final int port) {
+        Toast.makeText(this, "Testing " + ip + ":" + port + "...", Toast.LENGTH_SHORT).show();
         new Thread(new Runnable() {
             @Override
             public void run() {
                 boolean reachable = false;
                 try {
                     Socket socket = new Socket();
-                    socket.connect(new InetSocketAddress(ip, NOTE_PORT), 1500);
+                    socket.connect(new InetSocketAddress(ip, port), 1500);
                     socket.close();
                     reachable = true;
                 } catch (Exception ignored) {}
 
                 final boolean success = reachable;
+                final ServerEntry entry = success ? fetchServerInfo(ip, port, 1000) : null;
                 runOnUiThread(new Runnable() {
                     @Override
                     public void run() {
                         if (success) {
                             found.set(true);
-                            getSharedPreferences("FlowPrefs", MODE_PRIVATE).edit().putString("last_ip", ip).apply();
-                            Toast.makeText(MainActivity.this, "Connected to " + ip + "!", Toast.LENGTH_SHORT).show();
-                            loadApp(ip);
-                            syncOfflineFiles(ip);
+                            String branch = entry != null ? entry.branch : "";
+                            setConnectedServer(ip, port, branch);
+                            String msg = "Connected to " + ip + ":" + port + (!branch.isEmpty() ? " [" + branch + "]" : "") + "!";
+                            Toast.makeText(MainActivity.this, msg, Toast.LENGTH_SHORT).show();
+                            loadApp(ip, port);
+                            syncOfflineFiles(ip, port);
                         } else {
-                            Toast.makeText(MainActivity.this, "Could not reach " + ip + ":" + NOTE_PORT + ". Make sure PC server is running!", Toast.LENGTH_LONG).show();
+                            Toast.makeText(MainActivity.this, "Could not reach " + ip + ":" + port + ". Make sure server is running!", Toast.LENGTH_LONG).show();
                             promptManualIp();
                         }
                     }
@@ -548,16 +820,16 @@ public class MainActivity extends Activity {
     // ─────────────────────────────────────────────────────────────
     // IN-APP UPDATE SYSTEM
     // ─────────────────────────────────────────────────────────────
-    private void checkAppUpdate(final String ip, final boolean userTriggered) {
+    private void checkAppUpdate(final String ip, final int port, final boolean userTriggered) {
         if (userTriggered) {
-            Toast.makeText(this, "Checking for update on " + ip + "...", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "Checking for update on " + ip + ":" + port + "...", Toast.LENGTH_SHORT).show();
         }
 
         new Thread(new Runnable() {
             @Override
             public void run() {
                 try {
-                    URL url = new URL("http://" + ip + ":" + NOTE_PORT + "/api/app-version");
+                    URL url = new URL("http://" + ip + ":" + port + "/api/app-version");
                     HttpURLConnection conn = (HttpURLConnection) url.openConnection();
                     conn.setConnectTimeout(4000);
                     conn.setReadTimeout(5000);
@@ -612,7 +884,6 @@ public class MainActivity extends Activity {
                         appUpdateTime = pInfo.lastUpdateTime;
                     } catch (Exception ignored) {}
 
-                    // A new build is available if server mtime is newer than installed app time and different MD5
                     boolean isNewer = (serverMtime > (appUpdateTime + 5000)) && (serverMtime > lastInstalledMtime) && !serverMd5.equals(lastInstalledMd5);
 
                     if (!isNewer) {
@@ -634,14 +905,14 @@ public class MainActivity extends Activity {
                         public void run() {
                             new AlertDialog.Builder(MainActivity.this)
                                 .setTitle("🚀 App Update Available")
-                                .setMessage("A newer build of Flow Note is available on your PC server.\n\n"
+                                .setMessage("A newer build of Flow Note is available on this server.\n\n"
                                         + "• Size: " + sizeMb + "\n"
                                         + (dateStr.isEmpty() ? "" : "• Build Time: " + dateStr + "\n")
                                         + "\nWould you like to download and install this update now?")
                                 .setPositiveButton("Update Now", new DialogInterface.OnClickListener() {
                                     @Override
                                     public void onClick(DialogInterface dialog, int which) {
-                                        downloadAndInstallApk(ip, apkUrl, serverMtime, serverMd5);
+                                        downloadAndInstallApk(ip, port, apkUrl, serverMtime, serverMd5);
                                     }
                                 })
                                 .setNegativeButton("Later", null)
@@ -664,7 +935,7 @@ public class MainActivity extends Activity {
         }).start();
     }
 
-    private void downloadAndInstallApk(final String ip, final String apkUrl, final long serverMtime, final String serverMd5) {
+    private void downloadAndInstallApk(final String ip, final int port, final String apkUrl, final long serverMtime, final String serverMd5) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             if (!getPackageManager().canRequestPackageInstalls()) {
                 new AlertDialog.Builder(this)
@@ -698,7 +969,7 @@ public class MainActivity extends Activity {
             public void run() {
                 File apkFile = new File(getCacheDir(), "update.apk");
                 try {
-                    URL url = new URL("http://" + ip + ":" + NOTE_PORT + apkUrl);
+                    URL url = new URL("http://" + ip + ":" + port + apkUrl);
                     HttpURLConnection conn = (HttpURLConnection) url.openConnection();
                     conn.setConnectTimeout(5000);
                     conn.setReadTimeout(30000);
@@ -784,9 +1055,10 @@ public class MainActivity extends Activity {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 if (getPackageManager().canRequestPackageInstalls()) {
                     Toast.makeText(this, "Permission granted! Tap Check for Update to install.", Toast.LENGTH_SHORT).show();
-                    String lastIp = getSharedPreferences("FlowPrefs", MODE_PRIVATE).getString("last_ip", "");
+                    String lastIp = getConnectedIp();
+                    int lastPort = getConnectedPort();
                     if (!lastIp.isEmpty()) {
-                        checkAppUpdate(lastIp, true);
+                        checkAppUpdate(lastIp, lastPort, true);
                     }
                 } else {
                     Toast.makeText(this, "Install permission was not granted.", Toast.LENGTH_SHORT).show();
