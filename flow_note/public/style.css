@@ -740,6 +740,21 @@ kbd {
   display: block;
 }
 
+/* ── Freehand Draw ─────────────────────────────────────────── */
+.draw-element {
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+  border-radius: 0 !important;
+}
+.draw-element svg {
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  display: block;
+  pointer-events: none;
+}
+
 /* ── Shape Text Overlay ──────────────────────────────────────── */
 
 /* Wrapper sits absolutely over the SVG; pointer-events:none by default

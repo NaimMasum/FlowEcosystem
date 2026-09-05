@@ -291,6 +291,18 @@ function fixBBox(el) {
     el.y = Math.min(el.y1, el.y2);
     el.w = Math.max(20, Math.abs(el.x2 - el.x1));
     el.h = Math.max(20, Math.abs(el.y2 - el.y1));
+  } else if (el.type === 'draw' && el.points && el.points.length > 0) {
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    el.points.forEach(p => {
+      if (p.x < minX) minX = p.x;
+      if (p.y < minY) minY = p.y;
+      if (p.x > maxX) maxX = p.x;
+      if (p.y > maxY) maxY = p.y;
+    });
+    el.x = minX - 4;
+    el.y = minY - 4;
+    el.w = Math.max(20, maxX - minX + 8);
+    el.h = Math.max(20, maxY - minY + 8);
   }
 }
 
@@ -327,6 +339,8 @@ function buildNode(el, animate) {
     buildFileContent(node, el);
   } else if (el.type === 'link') {
     buildLinkContent(node, el);
+  } else if (el.type === 'draw') {
+    buildDrawContent(node, el);
   } else {
     buildShapeContent(node, el);
   }
@@ -597,6 +611,47 @@ function buildLinkContent(node, el) {
   });
 }
 
+function buildDrawContent(node, el) {
+  // Make bounding div invisible inline
+  node.style.background = 'transparent';
+  node.style.border = 'none';
+  node.style.boxShadow = 'none';
+  node.style.borderRadius = '0';
+  node.style.overflow = 'visible';
+
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+  svg.style.width = '100%';
+  svg.style.height = '100%';
+  svg.style.overflow = 'visible';
+  svg.style.display = 'block';
+  node.appendChild(svg);
+  syncDrawSVG(node, el);
+}
+
+function syncDrawSVG(node, el) {
+  const svg = node.querySelector('svg');
+  if (!svg) return;
+  svg.innerHTML = '';
+  if (!el.points || el.points.length < 2) return;
+
+  const c = SHAPE_COLORS[el.color] || SHAPE_COLORS.blueprint;
+  const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  let d = '';
+  el.points.forEach((p, i) => {
+    const lx = p.x - el.x;
+    const ly = p.y - el.y;
+    d += (i === 0 ? `M ${lx} ${ly}` : ` L ${lx} ${ly}`);
+  });
+  path.setAttribute('d', d);
+  path.setAttribute('fill', 'none');
+  path.setAttribute('stroke', c.stroke);
+  path.setAttribute('stroke-width', '3');
+  path.setAttribute('stroke-linecap', 'round');
+  path.setAttribute('stroke-linejoin', 'round');
+  svg.appendChild(path);
+}
+
 function buildShapeContent(node, el) {
   // ── SVG layer (the actual drawn shape) ───────────────
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -705,6 +760,8 @@ function syncNode(el) {
     if (img) img.src = el.url || '';
   } else if (el.type === 'file' || el.type === 'link') {
     // file and link elements do not use SVG
+  } else if (el.type === 'draw') {
+    syncDrawSVG(node, el);
   } else {
     syncNodeSVG(node, el);
     // Sync shape text from remote peer update
@@ -1098,6 +1155,18 @@ function onCanvasDown(e) {
   // These are handled by onElementPointerDown / onHandlePointerDown
   // which call e.stopPropagation(), so we only reach here for canvas clicks.
 
+  // ── Freehand draw tool ──────────────────────────────────
+  if (activeTool === 'draw') {
+    const wp = clientToWorld(e.clientX, e.clientY);
+    isDrawingFreehand = true;
+    const id = 'e' + Math.random().toString(36).slice(2, 11);
+    drawFreehandId = id;
+    const el = { id, type: 'draw', color: 'blueprint', zIndex: nextZ(), x: wp.x, y: wp.y, w: 1, h: 1, points: [{x: wp.x, y: wp.y}] };
+    elements[id] = el;
+    mountElement(el, false);
+    return;
+  }
+
   // ── Non-select tools → create element ──────────────────
   if (activeTool !== 'select') {
     const wp = clientToWorld(e.clientX, e.clientY);
@@ -1169,6 +1238,26 @@ function onCanvasMove(e) {
   }
 
   const wp = clientToWorld(e.clientX, e.clientY);
+
+  // ── Freehand draw tracking (smooth real-time ink, no bbox jumping) ──
+  if (isDrawingFreehand && drawFreehandId) {
+    const el = elements[drawFreehandId];
+    if (el) {
+      el.points.push({x: wp.x, y: wp.y});
+      const node = elementNodes.get(drawFreehandId);
+      if (node) {
+        const path = node.querySelector('path');
+        if (!path) {
+          syncDrawSVG(node, el);
+        } else {
+          const lx = wp.x - el.x;
+          const ly = wp.y - el.y;
+          path.setAttribute('d', path.getAttribute('d') + ` L ${lx} ${ly}`);
+        }
+      }
+    }
+    return;
+  }
 
   // ── Element resize ──────────────────────────────────────
   if (isResizing && dragElementSnaps.length === 1) {
