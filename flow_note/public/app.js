@@ -1374,6 +1374,26 @@ function onCanvasUp(e) {
     prevPinchDist = prevPinchMidX = prevPinchMidY = null;
   }
 
+  // ── Finalize freehand drawing ──────────────────────────
+  if (isDrawingFreehand) {
+    isDrawingFreehand = false;
+    if (drawFreehandId) {
+      const el = elements[drawFreehandId];
+      if (el && el.points && el.points.length > 1) {
+        fixBBox(el);
+        syncNode(el);
+        sendOp('add', { element: el });
+        select(drawFreehandId, false);
+      } else if (el) {
+        delete elements[drawFreehandId];
+        const n = elementNodes.get(drawFreehandId);
+        if (n) { n.remove(); elementNodes.delete(drawFreehandId); }
+      }
+      drawFreehandId = null;
+    }
+    return;
+  }
+
   // Handle arrow/line snapping to shapes
   if (isResizing && dragElementSnaps.length === 1) {
     const el = elements[dragElementSnaps[0].id];
@@ -1755,6 +1775,8 @@ function setupToolbar() {
           showImageModal();
         } else if (t.name === 'select') {
           setActiveTool('select');
+        } else if (t.name === 'draw') {
+          setActiveTool('draw');
         } else {
           // Create element at viewport centre
           const r   = viewport.getBoundingClientRect();
@@ -2304,6 +2326,7 @@ function setupKeyboard() {
 
     switch (e.key.toLowerCase()) {
       case 'v':       setActiveTool('select'); break;
+      case 'd':       setActiveTool('draw');   break;
       case 'n':       spawnAtCenter('note');    break;
       case 'r':       spawnAtCenter('rect');    break;
       case 'o':       spawnAtCenter('ellipse'); break;
