@@ -4,6 +4,7 @@ const WebSocket = require('ws');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
+const crypto = require('crypto');
 
 const PORT = process.env.PORT || 3939;
 const DATA_DIR = path.join(__dirname, 'data');
@@ -87,6 +88,32 @@ app.get('/api/files', (req, res) => {
   } catch (err) {
     console.error('Failed to list files:', err);
     res.json([]);
+  }
+});
+
+// App update & version check endpoint
+app.get('/api/app-version', (req, res) => {
+  const apkPath = path.join(__dirname, 'public', 'app.apk');
+  if (!fs.existsSync(apkPath)) {
+    return res.json({ available: false });
+  }
+
+  try {
+    const stat = fs.statSync(apkPath);
+    const fileBuf = fs.readFileSync(apkPath);
+    const md5 = crypto.createHash('md5').update(fileBuf).digest('hex');
+
+    res.json({
+      available: true,
+      size: stat.size,
+      mtime: Math.floor(stat.mtimeMs),
+      date: stat.mtime.toISOString(),
+      md5: md5,
+      url: '/app.apk'
+    });
+  } catch (err) {
+    console.error('Failed to inspect APK:', err);
+    res.status(500).json({ error: 'Failed to inspect APK' });
   }
 });
 

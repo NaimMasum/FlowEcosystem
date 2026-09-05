@@ -18,6 +18,7 @@ android {
 task copyWebAssets(type: Copy) {
     from '../../flow_note/public'
     into 'src/main/assets/web'
+    exclude 'app.apk'
 }
 
 preBuild.dependsOn copyWebAssets
@@ -28,3 +29,23 @@ task copyPdfAssets(type: Copy) {
 }
 
 preBuild.dependsOn copyPdfAssets
+
+tasks.matching { it.name == 'assembleDebug' }.all { task ->
+    task.doLast {
+        copy {
+            from 'build/outputs/apk/debug'
+            into '../../flow_note/public'
+            include 'app-debug.apk'
+            rename 'app-debug.apk', 'app.apk'
+        }
+        try {
+            copy {
+                from 'build/outputs/apk/debug'
+                into 'C:/Users/naim/Desktop'
+                include 'app-debug.apk'
+                rename 'app-debug.apk', 'FlowNote_Latest.apk'
+            }
+        } catch (Exception ignored) {}
+        println "[*] Successfully exported updated APK to flow_note/public/app.apk"
+    }
+}

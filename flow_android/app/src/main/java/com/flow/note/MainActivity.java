@@ -18,10 +18,15 @@ import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import android.app.ProgressDialog;
+import android.content.pm.PackageInfo;
+import android.os.Build;
+import android.provider.Settings;
 import android.widget.EditText;
 import android.widget.Toast;
 
 import org.json.JSONArray;
+import org.json.JSONObject;
 
 import java.io.File;
 import java.io.FileInputStream;
@@ -52,6 +57,7 @@ public class MainActivity extends Activity {
     private AtomicBoolean found = new AtomicBoolean(false);
     private ValueCallback<Uri[]> mUploadMessage;
     private final static int FILECHOOSER_RESULTCODE = 1;
+    private final static int INSTALL_PERMISSION_REQUEST_CODE = 1002;
 
     public class WebAppInterface {
         @JavascriptInterface
@@ -70,6 +76,21 @@ public class MainActivity extends Activity {
                 @Override
                 public void run() {
                     scanNetwork();
+                }
+            });
+        }
+
+        @JavascriptInterface
+        public void checkForUpdate() {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    String lastIp = getSharedPreferences("FlowPrefs", MODE_PRIVATE).getString("last_ip", "");
+                    if (!lastIp.isEmpty()) {
+                        checkAppUpdate(lastIp, true);
+                    } else {
+                        Toast.makeText(MainActivity.this, "Please connect to a server first", Toast.LENGTH_SHORT).show();
+                    }
                 }
             });
         }
@@ -225,6 +246,9 @@ public class MainActivity extends Activity {
                             Toast.makeText(MainActivity.this, "Offline Sync Complete", Toast.LENGTH_SHORT).show();
                         }
                     });
+
+                    // Automatically check if an updated APK is available on the server
+                    checkAppUpdate(ip, false);
                 } catch (Exception e) {
                     Log.e("FlowApp", "Sync error", e);
                 }
@@ -401,7 +425,47 @@ public class MainActivity extends Activity {
     private void promptManualIp() {
         final SharedPreferences prefs = getSharedPreferences("FlowPrefs", MODE_PRIVATE);
         final String lastIp = prefs.getString("last_ip", "");
-        
+
+        AlertDialog.Builder builder = new AlertDialog.Builder(this);
+        builder.setTitle("Flow Whiteboard Menu");
+
+        String connectLabel = lastIp.isEmpty() ? "🔌 Connect to IP" : "🔌 Connect to " + lastIp;
+        String[] options = new String[] {
+            connectLabel,
+            "🚀 Check for App Update",
+            "🔍 Rescan Local Network",
+            "📴 Offline Mode"
+        };
+
+        builder.setItems(options, new DialogInterface.OnClickListener() {
+            @Override
+            public void onClick(DialogInterface dialog, int which) {
+                if (which == 0) {
+                    promptEnterIp();
+                } else if (which == 1) {
+                    if (!lastIp.isEmpty()) {
+                        checkAppUpdate(lastIp, true);
+                    } else {
+                        Toast.makeText(MainActivity.this, "Please connect to a server first", Toast.LENGTH_SHORT).show();
+                        promptEnterIp();
+                    }
+                } else if (which == 2) {
+                    scanNetwork();
+                } else if (which == 3) {
+                    Toast.makeText(MainActivity.this, "Offline mode active.", Toast.LENGTH_SHORT).show();
+                    loadApp(lastIp.isEmpty() ? "127.0.0.1" : lastIp);
+                }
+            }
+        });
+
+        builder.setNegativeButton("Close", null);
+        builder.show();
+    }
+
+    private void promptEnterIp() {
+        final SharedPreferences prefs = getSharedPreferences("FlowPrefs", MODE_PRIVATE);
+        final String lastIp = prefs.getString("last_ip", "");
+
         Set<String> prefixes = getSubnetPrefixes();
         StringBuilder hint = new StringBuilder();
         if (!prefixes.isEmpty()) {
@@ -412,7 +476,7 @@ public class MainActivity extends Activity {
         }
 
         AlertDialog.Builder builder = new AlertDialog.Builder(this);
-        builder.setTitle("Connect to Flow Whiteboard");
+        builder.setTitle("Connect to Server");
         builder.setMessage((hint.length() > 0 ? hint.toString() + "\n\n" : "") + "Enter PC IP Address (e.g. 192.168.0.102):");
 
         final EditText input = new EditText(this);
@@ -444,15 +508,7 @@ public class MainActivity extends Activity {
             }
         });
 
-        builder.setNegativeButton("Offline Mode", new DialogInterface.OnClickListener() {
-            @Override
-            public void onClick(DialogInterface dialog, int which) {
-                Toast.makeText(MainActivity.this, "Offline mode active.", Toast.LENGTH_SHORT).show();
-                loadApp(lastIp.isEmpty() ? "127.0.0.1" : lastIp);
-            }
-        });
-
-        builder.setCancelable(false);
+        builder.setNegativeButton("Cancel", null);
         builder.show();
     }
 
@@ -489,6 +545,230 @@ public class MainActivity extends Activity {
         }).start();
     }
 
+    // ─────────────────────────────────────────────────────────────
+    // IN-APP UPDATE SYSTEM
+    // ─────────────────────────────────────────────────────────────
+    private void checkAppUpdate(final String ip, final boolean userTriggered) {
+        if (userTriggered) {
+            Toast.makeText(this, "Checking for update on " + ip + "...", Toast.LENGTH_SHORT).show();
+        }
+
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    URL url = new URL("http://" + ip + ":" + NOTE_PORT + "/api/app-version");
+                    HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+                    conn.setConnectTimeout(4000);
+                    conn.setReadTimeout(5000);
+
+                    if (conn.getResponseCode() != 200) {
+                        if (userTriggered) {
+                            runOnUiThread(new Runnable() {
+                                @Override
+                                public void run() {
+                                    Toast.makeText(MainActivity.this, "Server does not support update check", Toast.LENGTH_SHORT).show();
+                                }
+                            });
+                        }
+                        return;
+                    }
+
+                    InputStream is = conn.getInputStream();
+                    byte[] buffer = new byte[1024];
+                    StringBuilder sb = new StringBuilder();
+                    int read;
+                    while ((read = is.read(buffer)) != -1) {
+                        sb.append(new String(buffer, 0, read));
+                    }
+                    is.close();
+
+                    JSONObject json = new JSONObject(sb.toString());
+                    boolean available = json.optBoolean("available", false);
+                    if (!available) {
+                        if (userTriggered) {
+                            runOnUiThread(new Runnable() {
+                                @Override
+                                public void run() {
+                                    Toast.makeText(MainActivity.this, "No APK build found on server", Toast.LENGTH_SHORT).show();
+                                }
+                            });
+                        }
+                        return;
+                    }
+
+                    final long serverMtime = json.optLong("mtime", 0);
+                    final String serverMd5 = json.optString("md5", "");
+                    final long size = json.optLong("size", 0);
+                    final String dateStr = json.optString("date", "");
+                    final String apkUrl = json.optString("url", "/app.apk");
+
+                    SharedPreferences prefs = getSharedPreferences("FlowPrefs", MODE_PRIVATE);
+                    long lastInstalledMtime = prefs.getLong("last_installed_apk_mtime", 0);
+                    String lastInstalledMd5 = prefs.getString("last_installed_apk_md5", "");
+                    long appUpdateTime = 0;
+                    try {
+                        PackageInfo pInfo = getPackageManager().getPackageInfo(getPackageName(), 0);
+                        appUpdateTime = pInfo.lastUpdateTime;
+                    } catch (Exception ignored) {}
+
+                    // A new build is available if server mtime is newer than installed app time and different MD5
+                    boolean isNewer = (serverMtime > (appUpdateTime + 5000)) && (serverMtime > lastInstalledMtime) && !serverMd5.equals(lastInstalledMd5);
+
+                    if (!isNewer) {
+                        if (userTriggered) {
+                            runOnUiThread(new Runnable() {
+                                @Override
+                                public void run() {
+                                    Toast.makeText(MainActivity.this, "Flow Note is already up to date!", Toast.LENGTH_SHORT).show();
+                                }
+                            });
+                        }
+                        return;
+                    }
+
+                    final String sizeMb = String.format(Locale.US, "%.1f MB", size / (1024.0 * 1024.0));
+
+                    runOnUiThread(new Runnable() {
+                        @Override
+                        public void run() {
+                            new AlertDialog.Builder(MainActivity.this)
+                                .setTitle("🚀 App Update Available")
+                                .setMessage("A newer build of Flow Note is available on your PC server.\n\n"
+                                        + "• Size: " + sizeMb + "\n"
+                                        + (dateStr.isEmpty() ? "" : "• Build Time: " + dateStr + "\n")
+                                        + "\nWould you like to download and install this update now?")
+                                .setPositiveButton("Update Now", new DialogInterface.OnClickListener() {
+                                    @Override
+                                    public void onClick(DialogInterface dialog, int which) {
+                                        downloadAndInstallApk(ip, apkUrl, serverMtime, serverMd5);
+                                    }
+                                })
+                                .setNegativeButton("Later", null)
+                                .show();
+                        }
+                    });
+
+                } catch (final Exception e) {
+                    Log.e("FlowApp", "Update check failed", e);
+                    if (userTriggered) {
+                        runOnUiThread(new Runnable() {
+                            @Override
+                            public void run() {
+                                Toast.makeText(MainActivity.this, "Update check error: " + e.getMessage(), Toast.LENGTH_SHORT).show();
+                            }
+                        });
+                    }
+                }
+            }
+        }).start();
+    }
+
+    private void downloadAndInstallApk(final String ip, final String apkUrl, final long serverMtime, final String serverMd5) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            if (!getPackageManager().canRequestPackageInstalls()) {
+                new AlertDialog.Builder(this)
+                    .setTitle("Permission Required")
+                    .setMessage("Android requires permission to install updates from Flow Note. Please enable 'Install unknown apps' in settings, then tap Update again.")
+                    .setPositiveButton("Open Settings", new DialogInterface.OnClickListener() {
+                        @Override
+                        public void onClick(DialogInterface dialog, int which) {
+                            Intent intent = new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                                    Uri.parse("package:" + getPackageName()));
+                            startActivityForResult(intent, INSTALL_PERMISSION_REQUEST_CODE);
+                        }
+                    })
+                    .setNegativeButton("Cancel", null)
+                    .show();
+                return;
+            }
+        }
+
+        final ProgressDialog progressDialog = new ProgressDialog(this);
+        progressDialog.setTitle("Updating Flow Note");
+        progressDialog.setMessage("Downloading update from server...");
+        progressDialog.setProgressStyle(ProgressDialog.STYLE_HORIZONTAL);
+        progressDialog.setIndeterminate(false);
+        progressDialog.setMax(100);
+        progressDialog.setCancelable(false);
+        progressDialog.show();
+
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                File apkFile = new File(getCacheDir(), "update.apk");
+                try {
+                    URL url = new URL("http://" + ip + ":" + NOTE_PORT + apkUrl);
+                    HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+                    conn.setConnectTimeout(5000);
+                    conn.setReadTimeout(30000);
+                    int fileLength = conn.getContentLength();
+
+                    InputStream input = conn.getInputStream();
+                    FileOutputStream output = new FileOutputStream(apkFile);
+
+                    byte[] data = new byte[8192];
+                    long total = 0;
+                    int count;
+                    while ((count = input.read(data)) != -1) {
+                        total += count;
+                        output.write(data, 0, count);
+                        if (fileLength > 0) {
+                            final int progress = (int) (total * 100 / fileLength);
+                            runOnUiThread(new Runnable() {
+                                @Override
+                                public void run() {
+                                    progressDialog.setProgress(progress);
+                                }
+                            });
+                        }
+                    }
+
+                    output.flush();
+                    output.close();
+                    input.close();
+
+                    runOnUiThread(new Runnable() {
+                        @Override
+                        public void run() {
+                            progressDialog.dismiss();
+                            launchApkInstaller(apkFile, serverMtime, serverMd5);
+                        }
+                    });
+
+                } catch (final Exception e) {
+                    Log.e("FlowApp", "Update download failed", e);
+                    runOnUiThread(new Runnable() {
+                        @Override
+                        public void run() {
+                            progressDialog.dismiss();
+                            Toast.makeText(MainActivity.this, "Download failed: " + e.getMessage(), Toast.LENGTH_LONG).show();
+                        }
+                    });
+                }
+            }
+        }).start();
+    }
+
+    private void launchApkInstaller(File apkFile, long serverMtime, String serverMd5) {
+        try {
+            getSharedPreferences("FlowPrefs", MODE_PRIVATE).edit()
+                    .putLong("last_installed_apk_mtime", serverMtime)
+                    .putString("last_installed_apk_md5", serverMd5)
+                    .apply();
+
+            Uri apkUri = Uri.parse("content://" + GenericFileProvider.AUTHORITY + "/" + apkFile.getName());
+            Intent intent = new Intent(Intent.ACTION_VIEW);
+            intent.setDataAndType(apkUri, "application/vnd.android.package-archive");
+            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(intent);
+        } catch (Exception e) {
+            Log.e("FlowApp", "Failed to launch installer", e);
+            Toast.makeText(this, "Could not open installer: " + e.getMessage(), Toast.LENGTH_LONG).show();
+        }
+    }
+
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent intent) {
         if (requestCode == FILECHOOSER_RESULTCODE) {
@@ -500,6 +780,18 @@ public class MainActivity extends Activity {
                 mUploadMessage.onReceiveValue(null);
             }
             mUploadMessage = null;
+        } else if (requestCode == INSTALL_PERMISSION_REQUEST_CODE) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                if (getPackageManager().canRequestPackageInstalls()) {
+                    Toast.makeText(this, "Permission granted! Tap Check for Update to install.", Toast.LENGTH_SHORT).show();
+                    String lastIp = getSharedPreferences("FlowPrefs", MODE_PRIVATE).getString("last_ip", "");
+                    if (!lastIp.isEmpty()) {
+                        checkAppUpdate(lastIp, true);
+                    }
+                } else {
+                    Toast.makeText(this, "Install permission was not granted.", Toast.LENGTH_SHORT).show();
+                }
+            }
         }
     }
 
