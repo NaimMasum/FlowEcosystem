@@ -1548,4 +1548,252 @@ kbd {
   overflow: hidden;
 }
 
+/* ── Time Tracker Card ───────────────────────────────────────── */
+.timer-element {
+  background: #ffffff;
+  border: 1px solid var(--ui-border);
+  border-radius: 14px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08), 0 1px 3px rgba(0, 0, 0, 0.05);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  transition: box-shadow 0.15s ease, border-color 0.15s ease;
+  user-select: none;
+  box-sizing: border-box;
+}
+
+.timer-element:hover {
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.11), 0 2px 5px rgba(0, 0, 0, 0.06);
+}
+
+.timer-element.selected {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+/* Color accents on top border / outline */
+.timer-element.blueprint { border-top: 4px solid #2563eb; }
+.timer-element.yellow    { border-top: 4px solid #ca8a04; }
+.timer-element.green     { border-top: 4px solid #16a34a; }
+.timer-element.pink      { border-top: 4px solid #db2777; }
+.timer-element.purple    { border-top: 4px solid #9333ea; }
+.timer-element.orange    { border-top: 4px solid #ea580c; }
+.timer-element.charcoal  { border-top: 4px solid #334155; }
+
+.timer-card-inner {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  padding: 12px 14px 10px;
+  box-sizing: border-box;
+  background: #ffffff;
+  justify-content: space-between;
+}
+
+.timer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.timer-title-wrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+}
+
+.timer-icon {
+  width: 18px;
+  height: 18px;
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
+.timer-title-input {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+  border: none;
+  background: transparent;
+  padding: 2px 4px;
+  border-radius: 4px;
+  outline: none;
+  width: 100%;
+  text-overflow: ellipsis;
+  font-family: inherit;
+  cursor: text;
+}
+
+.timer-title-input:hover, .timer-title-input:focus {
+  background: rgba(0, 0, 0, 0.05);
+}
+
+.timer-mode-btn {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 3px 8px;
+  border-radius: 12px;
+  border: 1px solid var(--ui-border);
+  background: #f8fafc;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.timer-mode-btn:hover {
+  background: #f1f5f9;
+  color: var(--text);
+  border-color: rgba(0,0,0,0.15);
+}
+
+.timer-display-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  margin: 4px 0;
+  position: relative;
+}
+
+.timer-digits {
+  font-family: 'JetBrains Mono', 'SF Mono', 'Courier New', monospace;
+  font-size: 34px;
+  font-weight: 800;
+  letter-spacing: -1px;
+  color: var(--text);
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+.timer-status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  margin-top: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.timer-status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #94a3b8;
+}
+
+.timer-element.running .timer-status-dot {
+  background: #22c55e;
+  box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.25);
+  animation: timerPulse 1.5s infinite;
+}
+
+.timer-element.running .timer-digits {
+  color: #0f172a;
+}
+
+@keyframes timerPulse {
+  0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.5); }
+  70% { transform: scale(1.05); box-shadow: 0 0 0 6px rgba(34, 197, 94, 0); }
+  100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(34, 197, 94, 0); }
+}
+
+.timer-controls {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.timer-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 6px 14px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  border: 1px solid var(--ui-border);
+  background: #f8fafc;
+  color: var(--text);
+  transition: all 0.15s ease;
+  min-height: 32px;
+}
+
+.timer-btn:hover {
+  background: #f1f5f9;
+  border-color: rgba(0, 0, 0, 0.15);
+  transform: translateY(-1px);
+}
+
+.timer-btn:active {
+  transform: translateY(0);
+}
+
+.timer-btn.primary {
+  background: var(--accent);
+  color: #ffffff;
+  border-color: var(--accent);
+  padding: 6px 18px;
+}
+
+.timer-btn.primary:hover {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+  box-shadow: 0 2px 8px rgba(37, 99, 235, 0.3);
+}
+
+.timer-btn.primary.pause-state {
+  background: #f59e0b;
+  border-color: #f59e0b;
+}
+
+.timer-btn.primary.pause-state:hover {
+  background: #d97706;
+  border-color: #d97706;
+  box-shadow: 0 2px 8px rgba(245, 158, 11, 0.3);
+}
+
+.timer-laps-container {
+  margin-top: 6px;
+  border-top: 1px dashed var(--ui-border);
+  padding-top: 6px;
+  max-height: 60px;
+  overflow-y: auto;
+  font-size: 11px;
+  font-family: 'JetBrains Mono', 'SF Mono', monospace;
+  color: var(--text-muted);
+}
+
+.timer-laps-container:empty {
+  display: none;
+}
+
+.timer-lap-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 2px 4px;
+  border-radius: 4px;
+}
+
+.timer-lap-row:hover {
+  background: rgba(0, 0, 0, 0.03);
+}
+
+
 

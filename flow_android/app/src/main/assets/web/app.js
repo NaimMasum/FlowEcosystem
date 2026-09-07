@@ -339,6 +339,8 @@ function buildNode(el, animate) {
     buildFileContent(node, el);
   } else if (el.type === 'link') {
     buildLinkContent(node, el);
+  } else if (el.type === 'timer') {
+    buildTimerContent(node, el);
   } else if (el.type === 'draw') {
     buildDrawContent(node, el);
   } else {
@@ -611,6 +613,294 @@ function buildLinkContent(node, el) {
   });
 }
 
+// ─────────────────────────────────────────────────────────────
+// TIME TRACKER CARD
+// ─────────────────────────────────────────────────────────────
+const activeTimerIntervals = new Map(); // id -> intervalId
+
+function getTimerCurrentMs(el) {
+  let ms = el.accumulatedMs || 0;
+  if (el.running && el.startedAt) {
+    ms += (Date.now() - el.startedAt);
+  }
+  if (el.mode === 'pomodoro') {
+    const total = el.pomodoroDurationMs || 25 * 60 * 1000;
+    return Math.max(0, total - ms);
+  }
+  return ms;
+}
+
+function formatTimerTime(ms, includeHours = false) {
+  const totalSec = Math.floor(Math.max(0, ms) / 1000);
+  const hrs = Math.floor(totalSec / 3600);
+  const mins = Math.floor((totalSec % 3600) / 60);
+  const secs = totalSec % 60;
+  if (hrs > 0 || includeHours) {
+    return `${String(hrs).padStart(2, '0')}:${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+  }
+  return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+}
+
+function ensureTimerTick(el) {
+  if (el.running) {
+    if (!activeTimerIntervals.has(el.id)) {
+      const interval = setInterval(() => {
+        const node = elementNodes.get(el.id);
+        if (!node) {
+          stopTimerTick(el.id);
+          return;
+        }
+        const digits = node.querySelector('.timer-digits');
+        if (digits) {
+          const ms = getTimerCurrentMs(el);
+          digits.textContent = formatTimerTime(ms, ms >= 3600000);
+          if (el.mode === 'pomodoro' && ms <= 0 && el.running) {
+            el.running = false;
+            el.startedAt = null;
+            el.accumulatedMs = el.pomodoroDurationMs || 25 * 60 * 1000;
+            stopTimerTick(el.id);
+            syncTimerNode(node, el);
+            sendOp('update', { element: el });
+            showToast('🍅 Pomodoro complete!');
+          }
+        }
+      }, 200);
+      activeTimerIntervals.set(el.id, interval);
+    }
+  } else {
+    stopTimerTick(el.id);
+  }
+}
+
+function stopTimerTick(id) {
+  if (activeTimerIntervals.has(id)) {
+    clearInterval(activeTimerIntervals.get(id));
+    activeTimerIntervals.delete(id);
+  }
+}
+
+function buildTimerContent(node, el) {
+  node.classList.add('timer-element');
+  const inner = document.createElement('div');
+  inner.className = 'timer-card-inner';
+
+  // 1. Header: Icon + Title Input + Mode Toggle Badge
+  const header = document.createElement('div');
+  header.className = 'timer-header';
+
+  const titleWrap = document.createElement('div');
+  titleWrap.className = 'timer-title-wrap';
+
+  const icon = document.createElement('div');
+  icon.className = 'timer-icon';
+  icon.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="13" r="8"/><polyline points="12 9 12 13 15 15"/><path d="M12 2v3"/><path d="M10 2h4"/></svg>`;
+
+  const titleInput = document.createElement('input');
+  titleInput.type = 'text';
+  titleInput.className = 'timer-title-input';
+  titleInput.value = el.title || 'Focus Session';
+  titleInput.placeholder = 'Timer Title...';
+  titleInput.title = 'Click to rename task';
+  titleInput.addEventListener('pointerdown', e => e.stopPropagation());
+  titleInput.addEventListener('keydown', e => {
+    e.stopPropagation();
+    if (e.key === 'Enter') titleInput.blur();
+  });
+  titleInput.addEventListener('change', () => {
+    const val = titleInput.value.trim() || 'Timer';
+    el.title = val;
+    sendOp('update', { element: el });
+  });
+
+  titleWrap.appendChild(icon);
+  titleWrap.appendChild(titleInput);
+
+  const modeBtn = document.createElement('button');
+  modeBtn.className = 'timer-mode-btn';
+  modeBtn.title = 'Click to toggle between Stopwatch and Pomodoro';
+  modeBtn.addEventListener('pointerdown', e => e.stopPropagation());
+  modeBtn.addEventListener('click', e => {
+    e.stopPropagation();
+    el.mode = (el.mode === 'pomodoro' ? 'stopwatch' : 'pomodoro');
+    el.running = false;
+    el.startedAt = null;
+    el.accumulatedMs = 0;
+    stopTimerTick(el.id);
+    syncTimerNode(node, el);
+    sendOp('update', { element: el });
+  });
+
+  header.appendChild(titleWrap);
+  header.appendChild(modeBtn);
+
+  // 2. Display: Digital Digits + Status Badge
+  const displayWrap = document.createElement('div');
+  displayWrap.className = 'timer-display-wrap';
+
+  const digits = document.createElement('div');
+  digits.className = 'timer-digits';
+
+  const statusBadge = document.createElement('div');
+  statusBadge.className = 'timer-status-badge';
+  statusBadge.innerHTML = `<span class="timer-status-dot"></span><span class="timer-status-text">Ready</span>`;
+
+  displayWrap.appendChild(digits);
+  displayWrap.appendChild(statusBadge);
+
+  // 3. Controls: Play/Pause, Reset, Lap
+  const controls = document.createElement('div');
+  controls.className = 'timer-controls';
+
+  const playBtn = document.createElement('button');
+  playBtn.className = 'timer-btn primary timer-play-btn';
+  playBtn.addEventListener('pointerdown', e => e.stopPropagation());
+  playBtn.addEventListener('click', e => {
+    e.stopPropagation();
+    if (!el.running) {
+      // Starting / Resuming
+      if (el.mode === 'pomodoro') {
+        const remaining = getTimerCurrentMs(el);
+        if (remaining <= 0) {
+          el.accumulatedMs = 0;
+        }
+      }
+      el.running = true;
+      el.startedAt = Date.now();
+      ensureTimerTick(el);
+      syncTimerNode(node, el);
+      sendOp('update', { element: el });
+    } else {
+      // Pausing
+      el.accumulatedMs = (el.accumulatedMs || 0) + (Date.now() - el.startedAt);
+      el.running = false;
+      el.startedAt = null;
+      stopTimerTick(el.id);
+      syncTimerNode(node, el);
+      sendOp('update', { element: el });
+    }
+  });
+
+  const resetBtn = document.createElement('button');
+  resetBtn.className = 'timer-btn timer-reset-btn';
+  resetBtn.title = 'Reset timer';
+  resetBtn.innerHTML = `<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg><span>Reset</span>`;
+  resetBtn.addEventListener('pointerdown', e => e.stopPropagation());
+  resetBtn.addEventListener('click', e => {
+    e.stopPropagation();
+    el.running = false;
+    el.startedAt = null;
+    el.accumulatedMs = 0;
+    stopTimerTick(el.id);
+    syncTimerNode(node, el);
+    sendOp('update', { element: el });
+  });
+
+  const lapBtn = document.createElement('button');
+  lapBtn.className = 'timer-btn timer-lap-btn';
+  lapBtn.title = 'Record split / lap';
+  lapBtn.innerHTML = `<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><line x1="4" y1="22" x2="4" y2="15"/></svg><span>Lap</span>`;
+  lapBtn.addEventListener('pointerdown', e => e.stopPropagation());
+  lapBtn.addEventListener('click', e => {
+    e.stopPropagation();
+    const currentMs = getTimerCurrentMs(el);
+    if (currentMs > 0 || el.running) {
+      if (!Array.isArray(el.laps)) el.laps = [];
+      el.laps.unshift({
+        timeMs: currentMs,
+        timestamp: Date.now()
+      });
+      if (el.laps.length > 8) el.laps.pop();
+      syncTimerNode(node, el);
+      sendOp('update', { element: el });
+    }
+  });
+
+  controls.appendChild(playBtn);
+  controls.appendChild(resetBtn);
+  controls.appendChild(lapBtn);
+
+  // 4. Laps / Splits container
+  const lapsContainer = document.createElement('div');
+  lapsContainer.className = 'timer-laps-container';
+
+  inner.appendChild(header);
+  inner.appendChild(displayWrap);
+  inner.appendChild(controls);
+  inner.appendChild(lapsContainer);
+  node.appendChild(inner);
+
+  // Initial populate
+  syncTimerNode(node, el);
+  ensureTimerTick(el);
+}
+
+function syncTimerNode(node, el) {
+  if (!node) return;
+  const isRunning = Boolean(el.running);
+  node.classList.toggle('running', isRunning);
+
+  // Mode badge
+  const modeBtn = node.querySelector('.timer-mode-btn');
+  if (modeBtn) {
+    modeBtn.textContent = el.mode === 'pomodoro' ? '🍅 Pomodoro' : '⏱️ Stopwatch';
+  }
+
+  // Title
+  const titleInput = node.querySelector('.timer-title-input');
+  if (titleInput && document.activeElement !== titleInput) {
+    titleInput.value = el.title || 'Focus Session';
+  }
+
+  // Digits
+  const digits = node.querySelector('.timer-digits');
+  if (digits) {
+    const ms = getTimerCurrentMs(el);
+    digits.textContent = formatTimerTime(ms, ms >= 3600000);
+  }
+
+  // Status text
+  const statusText = node.querySelector('.timer-status-text');
+  if (statusText) {
+    if (isRunning) {
+      statusText.textContent = el.mode === 'pomodoro' ? 'Focusing' : 'Tracking';
+    } else if (el.accumulatedMs > 0) {
+      statusText.textContent = 'Paused';
+    } else {
+      statusText.textContent = 'Ready';
+    }
+  }
+
+  // Play button text & icon
+  const playBtn = node.querySelector('.timer-play-btn');
+  if (playBtn) {
+    if (isRunning) {
+      playBtn.className = 'timer-btn primary timer-play-btn pause-state';
+      playBtn.innerHTML = `<svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg><span>Pause</span>`;
+    } else {
+      playBtn.className = 'timer-btn primary timer-play-btn';
+      playBtn.innerHTML = `<svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg><span>${el.accumulatedMs > 0 ? 'Resume' : 'Start'}</span>`;
+    }
+  }
+
+  // Laps list
+  const lapsContainer = node.querySelector('.timer-laps-container');
+  if (lapsContainer) {
+    lapsContainer.innerHTML = '';
+    if (Array.isArray(el.laps) && el.laps.length > 0) {
+      el.laps.forEach((lap, idx) => {
+        const row = document.createElement('div');
+        row.className = 'timer-lap-row';
+        const num = el.laps.length - idx;
+        row.innerHTML = `<span>Lap ${num}</span><span>${formatTimerTime(lap.timeMs, lap.timeMs >= 3600000)}</span>`;
+        lapsContainer.appendChild(row);
+      });
+    }
+  }
+
+  // Keep interval in sync
+  ensureTimerTick(el);
+}
+
 function buildDrawContent(node, el) {
   // Make bounding div invisible inline
   node.style.background = 'transparent';
@@ -760,6 +1050,8 @@ function syncNode(el) {
     if (img) img.src = el.url || '';
   } else if (el.type === 'file' || el.type === 'link') {
     // file and link elements do not use SVG
+  } else if (el.type === 'timer') {
+    syncTimerNode(node, el);
   } else if (el.type === 'draw') {
     syncDrawSVG(node, el);
   } else {
@@ -865,6 +1157,7 @@ function clearAllNodes() {
 }
 
 function dropNode(id) {
+  stopTimerTick(id);
   const n = elementNodes.get(id);
   if (n) { n.remove(); elementNodes.delete(id); }
   shapeTextEditors.delete(id); // clean up editor registry
@@ -1675,6 +1968,13 @@ function createElement(type, wx, wy) {
 
   if (type === 'note') {
     Object.assign(el, { x: wx - 110, y: wy - 110, w: 220, h: 220, text: '' });
+  } else if (type === 'timer') {
+    Object.assign(el, {
+      x: wx - 130, y: wy - 105, w: 260, h: 210,
+      title: 'Focus Session', mode: 'stopwatch',
+      accumulatedMs: 0, running: false, startedAt: null,
+      pomodoroDurationMs: 25 * 60 * 1000, laps: []
+    });
   } else if (type === 'rect' || type === 'ellipse') {
     Object.assign(el, { x: wx - 80, y: wy - 60, w: 160, h: 120 });
   } else if (type === 'line' || type === 'arrow') {
@@ -1747,6 +2047,7 @@ const toolDefs = [
   { id: 'tool-arrow',   mId: 'm-tool-arrow',   name: 'arrow'   },
   { id: 'tool-draw',    mId: 'm-tool-draw',    name: 'draw'    },
   { id: 'tool-image',   mId: 'm-tool-image',   name: 'image'   },
+  { id: 'tool-timer',   mId: 'm-tool-timer',   name: 'timer'   },
 ];
 
 function setActiveTool(name) {
@@ -2333,6 +2634,7 @@ function setupKeyboard() {
       case 'l':       spawnAtCenter('line');    break;
       case 'a':       spawnAtCenter('arrow');   break;
       case 'i':       showImageModal();          break;
+      case 't':       spawnAtCenter('timer');    break;
       case 'escape':  deselect();                break;
       case 'delete':
       case 'backspace': deleteSelected();        break;
