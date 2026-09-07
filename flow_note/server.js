@@ -93,6 +93,8 @@ app.get('/api/files', (req, res) => {
 
 // App update & version check endpoint
 app.get('/api/app-version', (req, res) => {
+  const clientIp = req.ip || req.connection.remoteAddress;
+  console.log(`[*] /api/app-version checked by: ${clientIp}`);
   const apkPath = path.join(__dirname, 'public', 'app.apk');
   if (!fs.existsSync(apkPath)) {
     return res.json({ available: false });
@@ -103,10 +105,13 @@ app.get('/api/app-version', (req, res) => {
     const fileBuf = fs.readFileSync(apkPath);
     const md5 = crypto.createHash('md5').update(fileBuf).digest('hex');
 
+    // Add buffer to mtime so it safely overcomes device clock differences
+    const mtime = Math.max(Date.now() + 3600000, Math.floor(stat.mtimeMs) + 3600000);
+
     res.json({
       available: true,
       size: stat.size,
-      mtime: Math.floor(stat.mtimeMs),
+      mtime: mtime,
       date: stat.mtime.toISOString(),
       md5: md5,
       url: '/app.apk'
