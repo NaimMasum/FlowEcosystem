@@ -13,6 +13,15 @@ const statusDot  = statusEl ? statusEl.querySelector('.status-dot') : null;
 const statusText = statusEl ? statusEl.querySelector('.status-text') : null;
 const toastEl    = document.getElementById('toast');
 
+// Preview / Minimap refs
+const previewWindow       = document.getElementById('preview-window');
+const previewZoomVal      = document.getElementById('preview-zoom-val');
+const previewZoomIn       = document.getElementById('preview-zoom-in');
+const previewZoomOut      = document.getElementById('preview-zoom-out');
+const previewCanvasWrap   = document.getElementById('preview-canvas-wrap');
+const previewCanvas       = document.getElementById('preview-canvas');
+const previewViewportRect = document.getElementById('preview-viewport-rect');
+
 if (statusEl) {
   statusEl.addEventListener('click', () => {
     if (window.AndroidBridge && typeof window.AndroidBridge.showServerDialog === 'function') {
@@ -121,6 +130,7 @@ function init() {
   setupKeyboard();
   setupToolbar();
   setupModals();
+  setupPreviewMinimap();
 
   window.addEventListener('offline', () => {
     if (ws) ws.close();
@@ -270,8 +280,17 @@ function handleServerMsg(msg) {
 // ─────────────────────────────────────────────────────────────
 // CANVAS TRANSFORM
 // ─────────────────────────────────────────────────────────────
+let lastAppliedZoom = zoom;
 function applyTransform() {
   world.style.transform = `translate(${panX}px,${panY}px) scale(${zoom})`;
+  const zoomChanged = Math.abs(zoom - lastAppliedZoom) > 0.0001;
+  lastAppliedZoom = zoom;
+
+  if (zoomChanged) {
+    showPreviewWindow();
+  } else if (previewWindow && previewWindow.classList.contains('visible')) {
+    updateMinimap();
+  }
 }
 
 function clientToWorld(cx, cy) {
@@ -2676,6 +2695,317 @@ function showToast(msg, ms = 2200) {
   toastEl.classList.add('show');
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => toastEl.classList.remove('show'), ms);
+}
+
+// ─────────────────────────────────────────────────────────────
+// PREVIEW WINDOW & MINIMAP
+// ─────────────────────────────────────────────────────────────
+let previewHideTimer = null;
+let isHoveringPreview = false;
+let isDraggingMinimap = false;
+let minimapTransform = null;
+
+function showPreviewWindow() {
+  if (!previewWindow) return;
+  previewWindow.classList.add('visible');
+  updateMinimap();
+  scheduleHidePreview();
+}
+
+function scheduleHidePreview(delay = 2500) {
+  if (previewHideTimer) clearTimeout(previewHideTimer);
+  if (isHoveringPreview || isDraggingMinimap) return;
+  previewHideTimer = setTimeout(() => {
+    if (!isHoveringPreview && !isDraggingMinimap && previewWindow) {
+      previewWindow.classList.remove('visible');
+    }
+  }, delay);
+}
+
+function zoomByCenter(factor) {
+  const r = viewport.getBoundingClientRect();
+  const cx = r.width / 2;
+  const cy = r.height / 2;
+  const nz = Math.min(10, Math.max(0.08, zoom * factor));
+  panX = cx - (cx - panX) * (nz / zoom);
+  panY = cy - (cy - panY) * (nz / zoom);
+  zoom = nz;
+  applyTransform();
+  showPreviewWindow();
+}
+
+function zoomToCenter(targetZoom) {
+  const r = viewport.getBoundingClientRect();
+  const cx = r.width / 2;
+  const cy = r.height / 2;
+  const nz = Math.min(10, Math.max(0.08, targetZoom));
+  panX = cx - (cx - panX) * (nz / zoom);
+  panY = cy - (cy - panY) * (nz / zoom);
+  zoom = nz;
+  applyTransform();
+  showPreviewWindow();
+}
+
+function updateMinimap() {
+  if (!previewWindow || !previewCanvas || !previewCanvasWrap) return;
+
+  if (previewZoomVal) {
+    previewZoomVal.textContent = `${Math.round(zoom * 100)}%`;
+  }
+
+  const wrapRect = previewCanvasWrap.getBoundingClientRect();
+  const W_wrap = wrapRect.width || 180;
+  const H_wrap = wrapRect.height || 110;
+
+  const dpr = window.devicePixelRatio || 1;
+  const targetW = Math.round(W_wrap * dpr);
+  const targetH = Math.round(H_wrap * dpr);
+  if (previewCanvas.width !== targetW || previewCanvas.height !== targetH) {
+    previewCanvas.width = targetW;
+    previewCanvas.height = targetH;
+  }
+
+  const ctx = previewCanvas.getContext('2d');
+  ctx.save();
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, W_wrap, H_wrap);
+
+  const vr = viewport.getBoundingClientRect();
+  const vx1 = -panX / zoom;
+  const vy1 = -panY / zoom;
+  const vw = vr.width / zoom;
+  const vh = vr.height / zoom;
+  const vx2 = vx1 + vw;
+  const vy2 = vy1 + vh;
+
+  let minX = vx1;
+  let minY = vy1;
+  let maxX = vx2;
+  let maxY = vy2;
+
+  const allElements = Object.values(elements);
+  for (let i = 0; i < allElements.length; i++) {
+    const el = allElements[i];
+    if (typeof el.x === 'number' && !isNaN(el.x)) {
+      const ew = el.w || 40;
+      const eh = el.h || 40;
+      if (el.x < minX) minX = el.x;
+      if (el.y < minY) minY = el.y;
+      if (el.x + ew > maxX) maxX = el.x + ew;
+      if (el.y + eh > maxY) maxY = el.y + eh;
+    }
+  }
+
+  const pad = Math.max(140, Math.max(vw, vh) * 0.1);
+  minX -= pad;
+  minY -= pad;
+  maxX += pad;
+  maxY += pad;
+
+  const worldW = Math.max(20, maxX - minX);
+  const worldH = Math.max(20, maxY - minY);
+
+  const S = Math.min(W_wrap / worldW, H_wrap / worldH);
+  const offsetX = (W_wrap - worldW * S) / 2;
+  const offsetY = (H_wrap - worldH * S) / 2;
+
+  minimapTransform = { minX, minY, S, offsetX, offsetY, W_wrap, H_wrap };
+
+  const toMapX = wx => offsetX + (wx - minX) * S;
+  const toMapY = wy => offsetY + (wy - minY) * S;
+
+  // Render elements in minimap
+  for (let i = 0; i < allElements.length; i++) {
+    const el = allElements[i];
+    const mx = toMapX(el.x);
+    const my = toMapY(el.y);
+    const mw = Math.max(2, (el.w || 20) * S);
+    const mh = Math.max(2, (el.h || 20) * S);
+
+    if (el.type === 'draw' && Array.isArray(el.points) && el.points.length > 1) {
+      ctx.beginPath();
+      ctx.strokeStyle = el.color || '#2563eb';
+      ctx.lineWidth = Math.max(1, (el.strokeWidth || 3) * S);
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.moveTo(toMapX(el.points[0].x), toMapY(el.points[0].y));
+      for (let p = 1; p < el.points.length; p++) {
+        ctx.lineTo(toMapX(el.points[p].x), toMapY(el.points[p].y));
+      }
+      ctx.stroke();
+    } else if (el.type === 'line' || el.type === 'arrow') {
+      ctx.beginPath();
+      ctx.strokeStyle = el.stroke || '#2563eb';
+      ctx.lineWidth = Math.max(1.2, 2 * S);
+      ctx.moveTo(toMapX(el.x1 ?? el.x), toMapY(el.y1 ?? el.y));
+      ctx.lineTo(toMapX(el.x2 ?? (el.x + el.w)), toMapY(el.y2 ?? (el.y + el.h)));
+      ctx.stroke();
+    } else if (el.type === 'ellipse') {
+      ctx.beginPath();
+      ctx.ellipse(mx + mw / 2, my + mh / 2, Math.max(1, mw / 2), Math.max(1, mh / 2), 0, 0, Math.PI * 2);
+      ctx.fillStyle = el.fill || 'rgba(37, 99, 235, 0.15)';
+      ctx.fill();
+      ctx.strokeStyle = el.stroke || '#2563eb';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    } else {
+      // note, image, file, link, timer, rect, etc.
+      ctx.beginPath();
+      const r = Math.min(3, mw / 2, mh / 2);
+      if (ctx.roundRect) {
+        ctx.roundRect(mx, my, mw, mh, r);
+      } else {
+        ctx.rect(mx, my, mw, mh);
+      }
+      if (el.type === 'note') {
+        ctx.fillStyle = el.color ? el.color : '#fef08a';
+      } else if (el.type === 'timer') {
+        ctx.fillStyle = '#f87171';
+      } else if (el.type === 'image') {
+        ctx.fillStyle = '#60a5fa';
+      } else if (el.type === 'link') {
+        ctx.fillStyle = '#a78bfa';
+      } else {
+        ctx.fillStyle = el.fill || '#e2e8f0';
+      }
+      ctx.fill();
+      ctx.strokeStyle = el.stroke || 'rgba(0, 0, 0, 0.15)';
+      ctx.lineWidth = 0.8;
+      ctx.stroke();
+    }
+  }
+
+  ctx.restore();
+
+  // Position viewport camera indicator
+  if (previewViewportRect) {
+    const rx = toMapX(vx1);
+    const ry = toMapY(vy1);
+    const rw = vw * S;
+    const rh = vh * S;
+
+    previewViewportRect.style.left = `${Math.round(rx)}px`;
+    previewViewportRect.style.top = `${Math.round(ry)}px`;
+    previewViewportRect.style.width = `${Math.max(6, Math.round(rw))}px`;
+    previewViewportRect.style.height = `${Math.max(6, Math.round(rh))}px`;
+  }
+}
+
+function setupPreviewMinimap() {
+  if (!previewWindow || !previewCanvasWrap || !previewViewportRect) return;
+
+  let isDraggingViewportRect = false;
+  let dragStartClientX = 0;
+  let dragStartClientY = 0;
+  let dragStartPanX = 0;
+  let dragStartPanY = 0;
+
+  // Prevent preview interaction from leaking to underlying canvas
+  ['pointerdown', 'pointermove', 'pointerup', 'click', 'dblclick', 'contextmenu'].forEach(evt => {
+    previewWindow.addEventListener(evt, e => e.stopPropagation());
+  });
+
+  // Wheel zoom over preview window
+  previewWindow.addEventListener('wheel', e => {
+    e.stopPropagation();
+    e.preventDefault();
+    const factor = e.deltaY < 0 ? 1.09 : 1 / 1.09;
+    zoomByCenter(factor);
+  }, { passive: false });
+
+  // Hover & pointer retention
+  previewWindow.addEventListener('pointerenter', () => {
+    isHoveringPreview = true;
+    if (previewHideTimer) clearTimeout(previewHideTimer);
+  });
+  previewWindow.addEventListener('pointerleave', () => {
+    isHoveringPreview = false;
+    scheduleHidePreview(1500);
+  });
+
+  // Zoom control buttons
+  if (previewZoomIn) {
+    previewZoomIn.addEventListener('click', e => {
+      e.stopPropagation();
+      zoomByCenter(1.2);
+    });
+  }
+  if (previewZoomOut) {
+    previewZoomOut.addEventListener('click', e => {
+      e.stopPropagation();
+      zoomByCenter(1 / 1.2);
+    });
+  }
+  if (previewZoomVal) {
+    previewZoomVal.addEventListener('click', e => {
+      e.stopPropagation();
+      zoomToCenter(1.0);
+    });
+  }
+
+  // Drag the viewport camera rect
+  previewViewportRect.addEventListener('pointerdown', e => {
+    e.stopPropagation();
+    e.preventDefault();
+    if (!minimapTransform) return;
+    isDraggingMinimap = true;
+    isDraggingViewportRect = true;
+    dragStartClientX = e.clientX;
+    dragStartClientY = e.clientY;
+    dragStartPanX = panX;
+    dragStartPanY = panY;
+    try { previewViewportRect.setPointerCapture(e.pointerId); } catch (_) {}
+  });
+
+  previewViewportRect.addEventListener('pointermove', e => {
+    if (!isDraggingViewportRect || !minimapTransform) return;
+    const dx = e.clientX - dragStartClientX;
+    const dy = e.clientY - dragStartClientY;
+    const dwx = dx / minimapTransform.S;
+    const dwy = dy / minimapTransform.S;
+    panX = dragStartPanX - dwx * zoom;
+    panY = dragStartPanY - dwy * zoom;
+    applyTransform();
+  });
+
+  const stopRectDrag = e => {
+    if (isDraggingViewportRect) {
+      isDraggingViewportRect = false;
+      isDraggingMinimap = false;
+      try { previewViewportRect.releasePointerCapture(e.pointerId); } catch (_) {}
+      scheduleHidePreview();
+    }
+  };
+  previewViewportRect.addEventListener('pointerup', stopRectDrag);
+  previewViewportRect.addEventListener('pointercancel', stopRectDrag);
+
+  // Click / drag anywhere on canvas wrap to center camera
+  previewCanvasWrap.addEventListener('pointerdown', e => {
+    if (e.target === previewViewportRect) return;
+    e.stopPropagation();
+    e.preventDefault();
+    if (!minimapTransform) return;
+
+    isDraggingMinimap = true;
+    const rect = previewCanvasWrap.getBoundingClientRect();
+    const clickX = e.clientX - rect.left;
+    const clickY = e.clientY - rect.top;
+
+    const wx = minimapTransform.minX + (clickX - minimapTransform.offsetX) / minimapTransform.S;
+    const wy = minimapTransform.minY + (clickY - minimapTransform.offsetY) / minimapTransform.S;
+
+    const vr = viewport.getBoundingClientRect();
+    panX = vr.width / 2 - wx * zoom;
+    panY = vr.height / 2 - wy * zoom;
+    applyTransform();
+
+    isDraggingViewportRect = true;
+    dragStartClientX = e.clientX;
+    dragStartClientY = e.clientY;
+    dragStartPanX = panX;
+    dragStartPanY = panY;
+    try { previewViewportRect.setPointerCapture(e.pointerId); } catch (_) {}
+  });
 }
 
 // ─────────────────────────────────────────────────────────────

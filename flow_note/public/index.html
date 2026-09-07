@@ -264,6 +264,25 @@
       </div>
     </div>
 
+    <!-- ===== PREVIEW / MINIMAP WINDOW ===== -->
+    <div id="preview-window" class="preview-window" role="region" aria-label="Canvas preview and zoom">
+      <div class="preview-header">
+        <span class="preview-zoom-label" id="preview-zoom-val" title="Click to reset zoom to 100%">100%</span>
+        <div class="preview-zoom-actions">
+          <button class="preview-zoom-btn" id="preview-zoom-out" title="Zoom out (−)" aria-label="Zoom out">
+            <svg viewBox="0 0 24 24" width="11" height="11" stroke="currentColor" stroke-width="2.5" fill="none"><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          </button>
+          <button class="preview-zoom-btn" id="preview-zoom-in" title="Zoom in (+)" aria-label="Zoom in">
+            <svg viewBox="0 0 24 24" width="11" height="11" stroke="currentColor" stroke-width="2.5" fill="none"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          </button>
+        </div>
+      </div>
+      <div class="preview-canvas-wrap" id="preview-canvas-wrap">
+        <canvas id="preview-canvas" width="180" height="110"></canvas>
+        <div id="preview-viewport-rect" class="preview-viewport-rect"></div>
+      </div>
+    </div>
+
     <!-- ===== TOAST NOTIFICATION ===== -->
     <div id="toast" class="toast" aria-live="polite"></div>
 
