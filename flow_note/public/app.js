@@ -170,23 +170,54 @@ function flushOfflineQueue() {
   } catch (e) {}
 }
 
+let pingTimer = null;
+
+function resolveServerHost() {
+  if (location.host && !location.host.startsWith('localhost') && !location.host.startsWith('127.0.0.1')) {
+    try { localStorage.setItem('flow_server_host', location.host); } catch (e) {}
+    return location.host;
+  }
+  try {
+    if (window.AndroidBridge && typeof window.AndroidBridge.getServerIp === 'function') {
+      const bridgeIp = window.AndroidBridge.getServerIp();
+      if (bridgeIp) return `${bridgeIp}:3939`;
+    }
+  } catch (e) {}
+  try {
+    const savedHost = localStorage.getItem('flow_server_host');
+    if (savedHost) return savedHost;
+  } catch (e) {}
+  return location.host || 'localhost:3939';
+}
+
 function connectWebSocket() {
   setStatus('connecting');
+  const targetHost = resolveServerHost();
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  ws = new WebSocket(`${proto}//${location.host}`);
+  ws = new WebSocket(`${proto}//${targetHost}`);
 
   ws.onopen = () => {
     setStatus('connected');
     reconnectDelay = 1000;
     flushOfflineQueue();
+    if (pingTimer) clearInterval(pingTimer);
+    pingTimer = setInterval(() => {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'ping' }));
+      }
+    }, 15000);
   };
 
   ws.onmessage = ({ data }) => {
-    try { handleServerMsg(JSON.parse(data)); }
-    catch (e) { console.error('WS parse error', e); }
+    try {
+      const parsed = JSON.parse(data);
+      if (parsed.type === 'pong') return;
+      handleServerMsg(parsed);
+    } catch (e) { console.error('WS parse error', e); }
   };
 
   ws.onclose = () => {
+    if (pingTimer) clearInterval(pingTimer);
     setStatus('disconnected');
     setTimeout(() => {
       reconnectDelay = Math.min(reconnectDelay * 2, MAX_RECONNECT);
@@ -219,28 +250,50 @@ function setStatus(state) {
 function handleServerMsg(msg) {
   switch (msg.type) {
     case 'init': {
-      clearAllNodes();
-      elements = msg.elements || {};
+      const incoming = msg.elements || {};
       try {
         const queue = JSON.parse(localStorage.getItem('flow_note_queue') || '[]');
         queue.forEach(op => {
           if (op.type === 'add' || op.type === 'update') {
-            if (op.payload.element) elements[op.payload.element.id] = op.payload.element;
+            if (op.payload.element) incoming[op.payload.element.id] = op.payload.element;
           } else if (op.type === 'delete') {
-            if (op.payload.id) delete elements[op.payload.id];
+            if (op.payload.id) delete incoming[op.payload.id];
           } else if (op.type === 'deleteMultiple') {
-            if (op.payload.ids) op.payload.ids.forEach(id => delete elements[id]);
+            if (op.payload.ids) op.payload.ids.forEach(id => delete incoming[id]);
           }
         });
         localStorage.removeItem('flow_note_queue');
       } catch (e) {}
 
+      // Keep active editing element intact so user doesn't lose typing state or focus
+      const activeEl = document.activeElement;
+      const editingNode = activeEl ? activeEl.closest('.board-element') : null;
+      const editingId = editingNode ? editingNode.id : null;
+
+      // Remove deleted elements
+      for (const id of Array.from(elementNodes.keys())) {
+        if (!incoming[id] && id !== editingId) {
+          dropNode(id);
+        }
+      }
+
+      elements = incoming;
+
+      // Reconcile elements smoothly without wiping canvas
       for (const el of Object.values(elements)) {
-          fixBBox(el);
+        fixBBox(el);
+        if (elementNodes.has(el.id)) {
+          if (el.id === editingId) {
+            syncNodePos(elementNodes.get(el.id), el);
+          } else {
+            syncNode(el);
+          }
+        } else {
           mountElement(el);
         }
-        saveLocalState();
-        break;
+      }
+      saveLocalState();
+      break;
     }
     case 'add': {
       const el = msg.element;
@@ -263,6 +316,7 @@ function handleServerMsg(msg) {
       delete elements[msg.id];
       selectedIds.delete(msg.id);
       syncSelectionUI();
+      saveLocalState();
       break;
     }
     case 'deleteMultiple': {
@@ -272,6 +326,7 @@ function handleServerMsg(msg) {
         selectedIds.delete(id);
       });
       syncSelectionUI();
+      saveLocalState();
       break;
     }
   }
@@ -456,6 +511,8 @@ function buildNoteContent(node, el) {
     }
   });
 
+  let noteTypingTimer = null;
+
   function enterEditMode() {
     ta.readOnly = false;
     ta.focus();
@@ -467,12 +524,16 @@ function buildNoteContent(node, el) {
   }
 
   function exitEditMode() {
+    if (noteTypingTimer) {
+      clearTimeout(noteTypingTimer);
+      noteTypingTimer = null;
+    }
     ta.readOnly = true;
     body.classList.remove('editing');
     node.classList.remove('editing-mode');
     ta.style.height = ''; // let flex handle it again
     const stored = elements[el.id];
-    if (stored && ta.value !== stored.text) {
+    if (stored) {
       stored.text = ta.value;
       sendOp('update', { element: stored });
     }
@@ -493,11 +554,17 @@ function buildNoteContent(node, el) {
   ta.addEventListener('blur', exitEditMode);
 
   ta.addEventListener('input', () => {
-      // Intentionally do NOT update elements[el.id].text here, 
-      // so blur event can detect the change and send the network update!
-      syncPlaceholder();
-      autoGrow();
-    });
+    syncPlaceholder();
+    autoGrow();
+    const stored = elements[el.id];
+    if (stored) {
+      stored.text = ta.value;
+      if (noteTypingTimer) clearTimeout(noteTypingTimer);
+      noteTypingTimer = setTimeout(() => {
+        sendOp('update', { element: stored });
+      }, 100);
+    }
+  });
 
   // Escape key exits editing
   ta.addEventListener('keydown', e => {
@@ -984,6 +1051,8 @@ function buildShapeContent(node, el) {
   ta.value      = el.text || '';
   ta.placeholder = 'Type here…';
 
+  let shapeTypingTimer = null;
+
   // ── Edit mode helpers ─────────────────────────────────
   function enterShapeEdit() {
     const stored = elements[el.id];
@@ -997,6 +1066,10 @@ function buildShapeContent(node, el) {
   }
 
   function exitShapeEdit() {
+    if (shapeTypingTimer) {
+      clearTimeout(shapeTypingTimer);
+      shapeTypingTimer = null;
+    }
     ta.style.display = 'none';
     view.style.display = '';
     wrap.classList.remove('editing');
@@ -1007,10 +1080,8 @@ function buildShapeContent(node, el) {
     const newText = ta.value;
     view.textContent = newText;
     view.classList.toggle('empty', !newText.trim());
-    if (newText !== stored.text) {
-      stored.text = newText;
-      sendOp('update', { element: stored });
-    }
+    stored.text = newText;
+    sendOp('update', { element: stored });
   }
 
   // ── Event listeners ────────────────────────────────────
@@ -1018,7 +1089,14 @@ function buildShapeContent(node, el) {
   ta.addEventListener('pointerdown', e => e.stopPropagation());
   // Keep local state in sync while typing
   ta.addEventListener('input', () => {
-    // Intentionally do not update elements[el.id].text here
+    const stored = elements[el.id];
+    if (stored) {
+      stored.text = ta.value;
+      if (shapeTypingTimer) clearTimeout(shapeTypingTimer);
+      shapeTypingTimer = setTimeout(() => {
+        sendOp('update', { element: stored });
+      }, 100);
+    }
   });
   // Exit edit on blur
   ta.addEventListener('blur', exitShapeEdit);
@@ -1059,6 +1137,8 @@ function syncNode(el) {
     const ta = node.querySelector('textarea');
     if (ta && ta.readOnly) {
       ta.value = el.text || '';
+      ta.style.height = 'auto';
+      ta.style.height = ta.scrollHeight + 'px';
       const body = node.querySelector('.note-body');
       if (body) body.classList.toggle('has-content', (el.text || '').trim().length > 0);
     }

@@ -249,18 +249,28 @@ wss.on('connection', (ws) => {
 
   // Setup ping-pong heartbeat
   ws.isAlive = true;
+  ws.missedPings = 0;
   ws.on('pong', () => {
     ws.isAlive = true;
+    ws.missedPings = 0;
+  });
+
+  ws.on('error', (err) => {
+    console.warn('Client socket error:', err.message);
   });
 
   // Handle incoming messages
   ws.on('message', (messageString) => {
+    ws.isAlive = true;
+    ws.missedPings = 0;
     try {
       const data = JSON.parse(messageString);
       
       switch (data.type) {
           case 'ping': {
-            ws.send(JSON.stringify({ type: 'pong' }));
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({ type: 'pong' }));
+            }
             break;
           }
           case 'add': {
@@ -322,7 +332,13 @@ function broadcast(sender, data) {
   const payload = JSON.stringify(data);
   wss.clients.forEach((client) => {
     if (client !== sender && client.readyState === WebSocket.OPEN) {
-      client.send(payload);
+      try {
+        client.send(payload, (err) => {
+          if (err) console.warn('Broadcast error:', err.message);
+        });
+      } catch (err) {
+        console.warn('Broadcast send exception:', err.message);
+      }
     }
   });
 }
@@ -331,11 +347,18 @@ function broadcast(sender, data) {
 const heartbeatInterval = setInterval(() => {
   wss.clients.forEach((ws) => {
     if (!ws.isAlive) {
-      console.log('Terminating unresponsive connection.');
-      return ws.terminate();
+      ws.missedPings = (ws.missedPings || 0) + 1;
+      if (ws.missedPings >= 2) {
+        console.log('Terminating unresponsive connection.');
+        return ws.terminate();
+      }
+    } else {
+      ws.missedPings = 0;
     }
     ws.isAlive = false;
-    ws.ping();
+    try {
+      ws.ping();
+    } catch (e) {}
   });
 }, 30000);
 
@@ -377,7 +400,11 @@ server.listen(PORT, '0.0.0.0', () => {
 
   // Start mDNS/Bonjour Broadcasting
   try {
-    const validIPs = lanIPs.filter(ip => !ip.startsWith('192.168.56.'));
+    const validIPs = lanIPs.filter(ip => 
+      !ip.startsWith('192.168.56.') && 
+      !ip.startsWith('169.254.') && 
+      !ip.startsWith('127.')
+    );
     const hostIP = validIPs.length > 0 ? validIPs[0] : (lanIPs.length > 0 ? lanIPs[0] : '0.0.0.0');
     
     const bonjour = new Bonjour();

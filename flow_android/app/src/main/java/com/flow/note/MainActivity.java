@@ -81,6 +81,11 @@ public class MainActivity extends Activity {
         }
 
         @JavascriptInterface
+        public String getServerIp() {
+            return getSharedPreferences("FlowPrefs", MODE_PRIVATE).getString("last_ip", "");
+        }
+
+        @JavascriptInterface
         public void checkForUpdate() {
             runOnUiThread(new Runnable() {
                 @Override
@@ -208,6 +213,8 @@ public class MainActivity extends Activity {
             @Override
             public void run() {
                 try {
+                    // Delay offline file syncing slightly to prioritize WebSocket connection and board rendering
+                    Thread.sleep(4000);
                     File uploadsDir = new File(getFilesDir(), "uploads");
                     if (!uploadsDir.exists()) uploadsDir.mkdirs();
 
@@ -338,7 +345,7 @@ public class MainActivity extends Activity {
             executor.execute(new Runnable() {
                 @Override
                 public void run() {
-                    checkAndConnect(lastIp, "Reconnected to last server", 600);
+                    checkAndConnect(lastIp, "Reconnected to last server", 1500);
                 }
             });
         }
@@ -348,7 +355,7 @@ public class MainActivity extends Activity {
         executor.execute(new Runnable() {
             @Override
             public void run() {
-                checkAndConnect(tailscaleIp, "Connected via Tailscale! Syncing...", 1000);
+                checkAndConnect(tailscaleIp, "Connected via Tailscale! Syncing...", 2000);
             }
         });
 
@@ -377,7 +384,7 @@ public class MainActivity extends Activity {
                 executor.execute(new Runnable() {
                     @Override
                     public void run() {
-                        checkAndConnect(targetIp, "Connected via Wi-Fi! Syncing...", 450);
+                        checkAndConnect(targetIp, "Connected via Wi-Fi! Syncing...", 1200);
                     }
                 });
             }
@@ -389,7 +396,7 @@ public class MainActivity extends Activity {
             public void run() {
                 try {
                     executor.shutdown();
-                    executor.awaitTermination(3800, TimeUnit.MILLISECONDS);
+                    executor.awaitTermination(6000, TimeUnit.MILLISECONDS);
                 } catch (Exception ignored) {}
 
                 if (!found.get()) {
