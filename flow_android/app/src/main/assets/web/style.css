@@ -131,7 +131,8 @@ button {
   transition: background-color 0.4s;
 }
 
-.status-indicator.connected    { opacity: 0; } /* hide when all good */
+.status-indicator.connected    { opacity: 0.85; cursor: pointer; }
+.status-indicator.connected:hover { opacity: 1; }
 .status-indicator.connected .status-dot    { background: #22c55e; }
 .status-indicator.reconnecting { opacity: 1; }
 .status-indicator.reconnecting .status-dot { background: #f59e0b; animation: blink 1.4s ease infinite; }

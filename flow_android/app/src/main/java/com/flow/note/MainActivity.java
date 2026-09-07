@@ -156,15 +156,6 @@ public class MainActivity extends Activity {
                                 response.setResponseHeaders(headers);
                                 return response;
                             }
-                        } else if (path.equals("/") || path.equals("/index.html")) {
-                            InputStream is = getAssets().open("web/index.html");
-                            return new WebResourceResponse("text/html", "UTF-8", is);
-                        } else if (path.equals("/app.js")) {
-                            InputStream is = getAssets().open("web/app.js");
-                            return new WebResourceResponse("application/javascript", "UTF-8", is);
-                        } else if (path.equals("/style.css")) {
-                            InputStream is = getAssets().open("web/style.css");
-                            return new WebResourceResponse("text/css", "UTF-8", is);
                         }
                     }
                     
@@ -193,6 +184,19 @@ public class MainActivity extends Activity {
                 }
                 
                 return super.shouldInterceptRequest(view, request);
+            }
+
+            @Override
+            public void onReceivedError(WebView view, int errorCode, String description, String failingUrl) {
+                if (failingUrl != null && failingUrl.contains(":" + NOTE_PORT)) {
+                    Log.w("FlowApp", "Server load failed, falling back to local offline assets: " + description);
+                    runOnUiThread(new Runnable() {
+                        @Override
+                        public void run() {
+                            loadApp("");
+                        }
+                    });
+                }
             }
         });
         
@@ -246,9 +250,6 @@ public class MainActivity extends Activity {
                             Toast.makeText(MainActivity.this, "Offline Sync Complete", Toast.LENGTH_SHORT).show();
                         }
                     });
-
-                    // Automatically check if an updated APK is available on the server
-                    checkAppUpdate(ip, false);
                 } catch (Exception e) {
                     Log.e("FlowApp", "Sync error", e);
                 }
@@ -257,19 +258,21 @@ public class MainActivity extends Activity {
     }
 
     private void loadApp(String ip) {
-        try {
-            InputStream is = getAssets().open("web/index.html");
-            int size = is.available();
-            byte[] buffer = new byte[size];
-            is.read(buffer);
-            is.close();
-            String html = new String(buffer, "UTF-8");
-            
-            String baseUrl = "http://" + ip + ":" + NOTE_PORT + "/";
-            mWebView.loadDataWithBaseURL(baseUrl, html, "text/html", "UTF-8", null);
-        } catch (Exception e) {
-            Log.e("FlowApp", "Failed to load local HTML", e);
+        if (ip != null && !ip.isEmpty()) {
             mWebView.loadUrl("http://" + ip + ":" + NOTE_PORT);
+        } else {
+            try {
+                InputStream is = getAssets().open("web/index.html");
+                int size = is.available();
+                byte[] buffer = new byte[size];
+                is.read(buffer);
+                is.close();
+                String html = new String(buffer, "UTF-8");
+                String baseUrl = "http://localhost:" + NOTE_PORT + "/";
+                mWebView.loadDataWithBaseURL(baseUrl, html, "text/html", "UTF-8", null);
+            } catch (Exception e) {
+                Log.e("FlowApp", "Failed to load local HTML", e);
+            }
         }
     }
 
@@ -415,6 +418,7 @@ public class MainActivity extends Activity {
                     public void run() {
                         Toast.makeText(MainActivity.this, successMsg, Toast.LENGTH_SHORT).show();
                         loadApp(ip);
+                        checkAppUpdate(ip, false);
                         syncOfflineFiles(ip);
                     }
                 });
@@ -534,6 +538,7 @@ public class MainActivity extends Activity {
                             getSharedPreferences("FlowPrefs", MODE_PRIVATE).edit().putString("last_ip", ip).apply();
                             Toast.makeText(MainActivity.this, "Connected to " + ip + "!", Toast.LENGTH_SHORT).show();
                             loadApp(ip);
+                            checkAppUpdate(ip, false);
                             syncOfflineFiles(ip);
                         } else {
                             Toast.makeText(MainActivity.this, "Could not reach " + ip + ":" + NOTE_PORT + ". Make sure PC server is running!", Toast.LENGTH_LONG).show();
@@ -606,14 +611,8 @@ public class MainActivity extends Activity {
                     SharedPreferences prefs = getSharedPreferences("FlowPrefs", MODE_PRIVATE);
                     long lastInstalledMtime = prefs.getLong("last_installed_apk_mtime", 0);
                     String lastInstalledMd5 = prefs.getString("last_installed_apk_md5", "");
-                    long appUpdateTime = 0;
-                    try {
-                        PackageInfo pInfo = getPackageManager().getPackageInfo(getPackageName(), 0);
-                        appUpdateTime = pInfo.lastUpdateTime;
-                    } catch (Exception ignored) {}
-
-                    // A new build is available if server mtime is newer than installed app time and different MD5
-                    boolean isNewer = (serverMtime > (appUpdateTime + 5000)) && (serverMtime > lastInstalledMtime) && !serverMd5.equals(lastInstalledMd5);
+                    // A new build is available if the server MD5 is different from the installed APK MD5
+                    boolean isNewer = !serverMd5.isEmpty() && !serverMd5.equals(lastInstalledMd5);
 
                     if (!isNewer) {
                         if (userTriggered) {
