@@ -1455,8 +1455,8 @@ function setupCanvasPointers() {
 
 // ── Helper: upload File → Server → place on board ─────────────
 function uploadAndPlaceFile(file, cx, cy) {
-  if (file.size > 20 * 1024 * 1024) {
-    showToast('❌ File too large (max 20 MB)');
+  if (file.size > 200 * 1024 * 1024) {
+    showToast('❌ File too large (max 200 MB)');
     return;
   }
   showToast('⏳ Uploading...');
@@ -2467,8 +2467,8 @@ async function fetchLinkPreview(url) {
 // ── File → Server Upload ────────────────────────────────────────────
 async function uploadFileToServer(file) {
   if (!file) return;
-  if (file.size > 20 * 1024 * 1024) {
-    setPreviewError('File is too large (max 20 MB).');
+  if (file.size > 200 * 1024 * 1024) {
+    setPreviewError('File is too large (max 200 MB).');
     return;
   }
   setPreviewLoading();

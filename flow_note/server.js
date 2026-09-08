@@ -65,7 +65,7 @@ app.use('/uploads', (req, res, next) => {
 });
 
 // Endpoint to overwrite an existing upload (Sync changes)
-app.put('/uploads/:filename', express.raw({ type: '*/*', limit: '50mb' }), (req, res) => {
+app.put('/uploads/:filename', express.raw({ type: '*/*', limit: '250mb' }), (req, res) => {
   try {
     const filename = req.params.filename.replace(/[^a-zA-Z0-9.-]/g, '_');
     const filePath = path.join(UPLOADS_DIR, filename);
@@ -212,7 +212,8 @@ app.get('/api/link-preview', async (req, res) => {
   }
 });
 
-app.use(express.json({ limit: '50mb' }));
+app.use(express.json({ limit: '300mb' }));
+app.use(express.urlencoded({ limit: '300mb', extended: true }));
 
 app.post('/upload', (req, res) => {
   try {
