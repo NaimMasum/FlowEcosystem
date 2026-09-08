@@ -2687,6 +2687,24 @@ function setupTimerRecordsModal() {
   doneBtn?.addEventListener('click', closeModal);
   backdrop?.addEventListener('click', closeModal);
 
+  // Modal tabs
+  document.getElementById('tab-btn-list')?.addEventListener('click', () => switchRecordsModalTab('list'));
+  document.getElementById('tab-btn-stats')?.addEventListener('click', () => switchRecordsModalTab('stats'));
+
+  // Breakdown toggle
+  document.getElementById('stats-group-task')?.addEventListener('click', () => {
+    currentStatsBreakdown = 'task';
+    document.getElementById('stats-group-task')?.classList.add('active');
+    document.getElementById('stats-group-mode')?.classList.remove('active');
+    renderTimerStatistics(cachedTimerDbRecords);
+  });
+  document.getElementById('stats-group-mode')?.addEventListener('click', () => {
+    currentStatsBreakdown = 'mode';
+    document.getElementById('stats-group-mode')?.classList.add('active');
+    document.getElementById('stats-group-task')?.classList.remove('active');
+    renderTimerStatistics(cachedTimerDbRecords);
+  });
+
   // Desktop and Mobile trigger buttons
   document.getElementById('tool-timer-records')?.addEventListener('click', openTimerRecordsModal);
   document.getElementById('m-tool-timer-records')?.addEventListener('click', openTimerRecordsModal);
@@ -2722,10 +2740,204 @@ function setupTimerRecordsModal() {
   });
 }
 
+let currentStatsBreakdown = 'task'; // 'task' | 'mode'
+
+function switchRecordsModalTab(tabName) {
+  const tabListBtn = document.getElementById('tab-btn-list');
+  const tabStatsBtn = document.getElementById('tab-btn-stats');
+  const viewList = document.getElementById('records-view-list');
+  const viewStats = document.getElementById('records-view-stats');
+
+  if (tabName === 'stats') {
+    tabListBtn?.classList.remove('active');
+    tabStatsBtn?.classList.add('active');
+    if (viewList) viewList.style.display = 'none';
+    if (viewStats) viewStats.style.display = 'flex';
+    renderTimerStatistics(cachedTimerDbRecords);
+  } else {
+    tabStatsBtn?.classList.remove('active');
+    tabListBtn?.classList.add('active');
+    if (viewStats) viewStats.style.display = 'none';
+    if (viewList) viewList.style.display = 'flex';
+  }
+}
+
+const CHART_COLORS = [
+  '#3b82f6', '#10b981', '#f59e0b', '#ec4899', '#8b5cf6',
+  '#06b6d4', '#f97316', '#6366f1', '#14b8a6', '#84cc16'
+];
+
+function renderTimerStatistics(records) {
+  const svg = document.getElementById('stats-pie-svg');
+  const legendWrap = document.getElementById('stats-legend-wrap');
+  const totalPill = document.getElementById('stats-total-pill');
+  const centerTime = document.getElementById('pie-center-time');
+  const centerLabel = document.getElementById('pie-center-label');
+  const tooltip = document.getElementById('stats-pie-tooltip');
+
+  const avgMetric = document.getElementById('metric-avg-session');
+  const maxMetric = document.getElementById('metric-max-session');
+  const topTaskMetric = document.getElementById('metric-top-task');
+  const pomodoroCountMetric = document.getElementById('metric-pomodoro-count');
+
+  if (!svg || !legendWrap) return;
+
+  const totalDurationMs = (records || []).reduce((acc, r) => acc + (r.durationMs || 0), 0);
+  const count = (records || []).length;
+
+  if (totalPill) {
+    totalPill.textContent = `Total: ${formatTimerTime(totalDurationMs, true)}`;
+  }
+
+  // Update center
+  const resetCenter = () => {
+    if (centerTime) centerTime.textContent = formatTimerTime(totalDurationMs, totalDurationMs >= 3600000);
+    if (centerLabel) centerLabel.textContent = 'Total Time';
+    if (tooltip) tooltip.style.opacity = '0';
+    svg.querySelectorAll('.pie-slice').forEach(s => s.classList.remove('active'));
+    legendWrap.querySelectorAll('.legend-row').forEach(r => r.classList.remove('active'));
+  };
+  resetCenter();
+
+  // 1. Productivity Metrics
+  if (avgMetric) {
+    const avgMs = count > 0 ? Math.round(totalDurationMs / count) : 0;
+    avgMetric.textContent = formatTimerTime(avgMs, avgMs >= 3600000);
+  }
+
+  if (maxMetric) {
+    const maxMs = (records || []).reduce((max, r) => Math.max(max, r.durationMs || 0), 0);
+    maxMetric.textContent = formatTimerTime(maxMs, maxMs >= 3600000);
+  }
+
+  const pomodorosDone = (records || []).filter(r => r.mode === 'pomodoro').length;
+  if (pomodoroCountMetric) {
+    pomodoroCountMetric.textContent = pomodorosDone;
+  }
+
+  // 2. Aggregate by breakdown
+  const groups = new Map();
+  (records || []).forEach(r => {
+    let key;
+    if (currentStatsBreakdown === 'mode') {
+      key = r.mode === 'pomodoro' ? '🍅 Pomodoro' : '⏱️ Stopwatch';
+    } else {
+      key = (r.title || 'Timer').trim() || 'Timer';
+    }
+    const cur = groups.get(key) || { durationMs: 0, count: 0, label: key };
+    cur.durationMs += (r.durationMs || 0);
+    cur.count += 1;
+    groups.set(key, cur);
+  });
+
+  const sortedGroups = [...groups.values()].sort((a, b) => b.durationMs - a.durationMs);
+
+  // Top focus task metric
+  if (topTaskMetric) {
+    topTaskMetric.textContent = sortedGroups.length > 0 ? sortedGroups[0].label : '--';
+    topTaskMetric.title = sortedGroups.length > 0 ? sortedGroups[0].label : '';
+  }
+
+  svg.innerHTML = '';
+  legendWrap.innerHTML = '';
+
+  if (!records || records.length === 0 || totalDurationMs <= 0 || sortedGroups.length === 0) {
+    svg.innerHTML = `<circle cx="0" cy="0" r="75" fill="none" stroke="#e2e8f0" stroke-width="30"/>`;
+    legendWrap.innerHTML = `<div class="records-db-empty" style="padding:20px 0;">No timer activity to chart yet.</div>`;
+    if (centerTime) centerTime.textContent = '00:00';
+    return;
+  }
+
+  // 3. Draw Donut / Pie Chart Slices
+  const R = 90; // outer radius
+  const r = 58; // inner radius
+  let cumulativeAngle = 0;
+
+  sortedGroups.forEach((group, idx) => {
+    const fraction = totalDurationMs > 0 ? (group.durationMs / totalDurationMs) : 0;
+    const sliceAngle = fraction * 360;
+    const color = CHART_COLORS[idx % CHART_COLORS.length];
+    const pct = Math.round(fraction * 100);
+
+    const startAngle = cumulativeAngle;
+    const endAngle = cumulativeAngle + sliceAngle;
+    cumulativeAngle += sliceAngle;
+
+    let pathD;
+    if (sortedGroups.length === 1 || fraction >= 0.999) {
+      pathD = `
+        M 0 ${-R}
+        A ${R} ${R} 0 1 1 0 ${R}
+        A ${R} ${R} 0 1 1 0 ${-R}
+        M 0 ${-r}
+        A ${r} ${r} 0 1 0 0 ${r}
+        A ${r} ${r} 0 1 0 0 ${-r}
+        Z
+      `;
+    } else {
+      const startRad = (startAngle - 90) * Math.PI / 180;
+      const endRad = (endAngle - 90) * Math.PI / 180;
+      const x1 = R * Math.cos(startRad), y1 = R * Math.sin(startRad);
+      const x2 = R * Math.cos(endRad),   y2 = R * Math.sin(endRad);
+      const x3 = r * Math.cos(endRad),   y3 = r * Math.sin(endRad);
+      const x4 = r * Math.cos(startRad), y4 = r * Math.sin(startRad);
+      const largeArc = sliceAngle > 180 ? 1 : 0;
+
+      pathD = `M ${x1} ${y1} A ${R} ${R} 0 ${largeArc} 1 ${x2} ${y2} L ${x3} ${y3} A ${r} ${r} 0 ${largeArc} 0 ${x4} ${y4} Z`;
+    }
+
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('d', pathD);
+    path.setAttribute('fill', color);
+    path.setAttribute('class', 'pie-slice');
+    path.dataset.idx = idx;
+
+    // Legend row
+    const legendRow = document.createElement('div');
+    legendRow.className = 'legend-row';
+    legendRow.dataset.idx = idx;
+    legendRow.innerHTML = `
+      <div class="legend-left">
+        <span class="legend-dot" style="background:${color}"></span>
+        <span class="legend-label" title="${escapeHtml(group.label)}">${escapeHtml(group.label)}</span>
+      </div>
+      <div class="legend-right">
+        <span class="legend-time">${formatTimerTime(group.durationMs, group.durationMs >= 3600000)}</span>
+        <span class="legend-pct">${pct}%</span>
+      </div>
+    `;
+
+    const activate = () => {
+      svg.querySelectorAll('.pie-slice').forEach(s => s.classList.remove('active'));
+      legendWrap.querySelectorAll('.legend-row').forEach(r => r.classList.remove('active'));
+      path.classList.add('active');
+      legendRow.classList.add('active');
+      if (centerTime) centerTime.textContent = formatTimerTime(group.durationMs, group.durationMs >= 3600000);
+      if (centerLabel) centerLabel.textContent = group.label;
+      if (tooltip) {
+        tooltip.textContent = `${group.label}: ${formatTimerTime(group.durationMs, true)} (${pct}%)`;
+        tooltip.style.opacity = '1';
+      }
+    };
+
+    path.addEventListener('mouseenter', activate);
+    legendRow.addEventListener('mouseenter', activate);
+    path.addEventListener('click', activate);
+    legendRow.addEventListener('click', activate);
+
+    svg.appendChild(path);
+    legendWrap.appendChild(legendRow);
+  });
+
+  svg.addEventListener('mouseleave', resetCenter);
+  legendWrap.addEventListener('mouseleave', resetCenter);
+}
+
 async function openTimerRecordsModal() {
   const modal = document.getElementById('timer-records-modal');
   if (!modal) return;
   modal.classList.add('open');
+  switchRecordsModalTab('list');
   const searchInput = document.getElementById('records-search-input');
   if (searchInput) searchInput.value = '';
   await loadTimerRecordsDatabase();
@@ -2750,6 +2962,7 @@ async function loadTimerRecordsDatabase() {
     if (totalTimeEl) totalTimeEl.textContent = formatTimerTime(data.totalDurationMs || 0, true);
 
     renderTimerDbList(cachedTimerDbRecords);
+    renderTimerStatistics(cachedTimerDbRecords);
   } catch (err) {
     console.error('Error loading timer records database:', err);
     if (listContainer) {

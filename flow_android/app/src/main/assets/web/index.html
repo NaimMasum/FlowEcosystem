@@ -309,34 +309,95 @@
           </button>
         </div>
 
+        <div class="records-modal-tabs">
+          <button class="records-tab-btn active" id="tab-btn-list" data-tab="list">
+            <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
+            <span>All Records</span>
+          </button>
+          <button class="records-tab-btn" id="tab-btn-stats" data-tab="stats">
+            <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.21 15.89A10 10 0 1 1 8 2.83"/><path d="M22 12A10 10 0 0 0 12 2v10z"/></svg>
+            <span>Statistics &amp; Graphs</span>
+          </button>
+        </div>
+
         <div class="records-modal-body">
-          <!-- Summary Stats Banner -->
-          <div class="records-stats-banner">
-            <div class="records-stat-card">
-              <span class="stat-label">Total Closed Timers</span>
-              <span class="stat-val" id="db-total-count">0</span>
+          <!-- VIEW 1: RECORDS LIST -->
+          <div id="records-view-list" class="records-view-panel">
+            <!-- Summary Stats Banner -->
+            <div class="records-stats-banner">
+              <div class="records-stat-card">
+                <span class="stat-label">Total Closed Timers</span>
+                <span class="stat-val" id="db-total-count">0</span>
+              </div>
+              <div class="records-stat-card">
+                <span class="stat-label">Total Cumulative Time</span>
+                <span class="stat-val" id="db-total-time">00:00:00</span>
+              </div>
             </div>
-            <div class="records-stat-card">
-              <span class="stat-label">Total Cumulative Time</span>
-              <span class="stat-val" id="db-total-time">00:00:00</span>
+
+            <!-- Filter & Search Bar -->
+            <div class="records-filter-bar">
+              <div class="records-search-wrap">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="15" height="15"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                <input type="text" id="records-search-input" placeholder="Search closed timers by title...">
+              </div>
+              <button class="records-action-btn secondary" id="records-export-btn" title="Download database JSON">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="14" height="14"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                <span>Export JSON</span>
+              </button>
+            </div>
+
+            <!-- Scrollable Records Container -->
+            <div class="records-list-table-wrap" id="records-db-list">
+              <!-- Populated by JS -->
             </div>
           </div>
 
-          <!-- Filter & Search Bar -->
-          <div class="records-filter-bar">
-            <div class="records-search-wrap">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="15" height="15"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-              <input type="text" id="records-search-input" placeholder="Search closed timers by title...">
+          <!-- VIEW 2: STATISTICS & PIE CHART -->
+          <div id="records-view-stats" class="records-view-panel" style="display:none;">
+            <!-- Breakdown Filter & Mode Switcher -->
+            <div class="stats-top-bar">
+              <div class="stats-toggle-group">
+                <button class="stats-toggle-btn active" id="stats-group-task" data-group="task">By Task</button>
+                <button class="stats-toggle-btn" id="stats-group-mode" data-group="mode">By Mode</button>
+              </div>
+              <div class="stats-total-pill" id="stats-total-pill">Total: 0h 0m</div>
             </div>
-            <button class="records-action-btn secondary" id="records-export-btn" title="Download database JSON">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="14" height="14"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-              <span>Export JSON</span>
-            </button>
-          </div>
 
-          <!-- Scrollable Records Container -->
-          <div class="records-list-table-wrap" id="records-db-list">
-            <!-- Populated by JS -->
+            <!-- Visual Chart Area -->
+            <div class="stats-chart-card">
+              <div class="stats-pie-wrapper">
+                <svg id="stats-pie-svg" viewBox="-120 -120 240 240" class="stats-pie-svg"></svg>
+                <div class="stats-pie-center" id="stats-pie-center">
+                  <span class="pie-center-val" id="pie-center-time">0m</span>
+                  <span class="pie-center-lbl" id="pie-center-label">Total Time</span>
+                </div>
+                <div class="stats-pie-tooltip" id="stats-pie-tooltip"></div>
+              </div>
+              <div class="stats-legend-wrap" id="stats-legend-wrap">
+                <!-- Color-coded legend rows -->
+              </div>
+            </div>
+
+            <!-- Metrics Grid -->
+            <div class="stats-metrics-grid">
+              <div class="metric-tile">
+                <div class="metric-tile-title">Avg Session</div>
+                <div class="metric-tile-value" id="metric-avg-session">0m</div>
+              </div>
+              <div class="metric-tile">
+                <div class="metric-tile-title">Longest Session</div>
+                <div class="metric-tile-value" id="metric-max-session">0m</div>
+              </div>
+              <div class="metric-tile">
+                <div class="metric-tile-title">Top Focus Task</div>
+                <div class="metric-tile-value text-ellipsis" id="metric-top-task">--</div>
+              </div>
+              <div class="metric-tile">
+                <div class="metric-tile-title">Pomodoros Done</div>
+                <div class="metric-tile-value" id="metric-pomodoro-count">0</div>
+              </div>
+            </div>
           </div>
         </div>
 
