@@ -746,7 +746,7 @@ function ensureTimerTick(el) {
             el.accumulatedMs = 0;
             stopTimerTick(el.id);
             if (!Array.isArray(el.records)) el.records = [];
-            el.records.unshift({
+            const pomodoroRec = {
               id: 'rec_' + Math.random().toString(36).slice(2, 9),
               title: el.title || 'Pomodoro Session',
               mode: 'pomodoro',
@@ -754,10 +754,12 @@ function ensureTimerTick(el) {
               completedAt: Date.now(),
               lapsCount: (el.laps || []).length,
               laps: (el.laps || []).slice()
-            });
+            };
+            el.records.unshift(pomodoroRec);
             el.laps = [];
             syncTimerNode(node, el);
             sendOp('update', { element: el });
+            saveSessionToDatabase(pomodoroRec, el);
             showToast('🍅 Pomodoro complete & recorded!');
           }
         }
@@ -836,6 +838,29 @@ function pinRecordToNote(el, rec) {
   select(noteId, false);
   sendOp('add', { element: noteEl });
   showToast('📌 Record pinned to note!');
+}
+
+function saveSessionToDatabase(rec, el) {
+  if (!rec) return;
+  const payload = {
+    id: rec.id || ('tr_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7)),
+    timerId: el ? el.id : null,
+    title: rec.title || (el && el.title) || 'Focus Session',
+    mode: rec.mode || (el && el.mode) || 'stopwatch',
+    durationMs: rec.durationMs || 0,
+    laps: Array.isArray(rec.laps) ? rec.laps : [],
+    closedAt: rec.completedAt || Date.now(),
+    color: (el && el.color) || 'blueprint'
+  };
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'recordSession', record: payload }));
+  } else {
+    fetch('/api/timer-records', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    }).catch(e => console.warn('Failed to post timer record:', e));
+  }
 }
 
 function closeAndArchiveTimer(id) {
@@ -1021,8 +1046,7 @@ function buildTimerContent(node, el) {
       stopTimerTick(el.id);
     }
     const sessionDuration = el.accumulatedMs || currentMs;
-    if (!Array.isArray(el.records)) el.records = [];
-    el.records.unshift({
+    const sessionRec = {
       id: 'rec_' + Math.random().toString(36).slice(2, 9),
       title: el.title || (el.mode === 'pomodoro' ? 'Pomodoro Session' : 'Focus Session'),
       mode: el.mode,
@@ -1030,13 +1054,16 @@ function buildTimerContent(node, el) {
       completedAt: Date.now(),
       lapsCount: (el.laps || []).length,
       laps: (el.laps || []).slice()
-    });
+    };
+    if (!Array.isArray(el.records)) el.records = [];
+    el.records.unshift(sessionRec);
     el.accumulatedMs = 0;
     el.laps = [];
     node.dataset.view = 'records';
     syncTimerNode(node, el);
     sendOp('update', { element: el });
-    showToast('⏱️ Session recorded!');
+    saveSessionToDatabase(sessionRec, el);
+    showToast('⏱️ Session recorded & saved to database!');
   });
 
   const resetBtn = document.createElement('button');

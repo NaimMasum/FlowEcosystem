@@ -76,6 +76,31 @@ function queueSaveTimerRecords() {
   }, 1000);
 }
 
+// Helper to save or update an individual timer record
+function saveDirectRecord(recordData) {
+  if (!recordData) return null;
+  const record = {
+    id: recordData.id || ('tr_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7)),
+    timerId: recordData.timerId || null,
+    title: recordData.title || 'Timer Record',
+    mode: recordData.mode || 'stopwatch',
+    durationMs: Number(recordData.durationMs) || 0,
+    laps: Array.isArray(recordData.laps) ? recordData.laps : [],
+    records: Array.isArray(recordData.records) ? recordData.records : [],
+    closedAt: recordData.closedAt || recordData.completedAt || Date.now(),
+    color: recordData.color || 'blueprint'
+  };
+  const existingIdx = timerRecords.findIndex(r => r.id === record.id);
+  if (existingIdx >= 0) {
+    timerRecords[existingIdx] = record;
+  } else {
+    timerRecords.unshift(record);
+  }
+  queueSaveTimerRecords();
+  console.log(`[*] Recorded timer session '${record.title}' (${Math.round(record.durationMs/1000)}s) to database.`);
+  return record;
+}
+
 // Central auto-archival for closed timers
 function archiveClosedTimer(el) {
   if (!el || el.type !== 'timer') return null;
@@ -83,20 +108,47 @@ function archiveClosedTimer(el) {
   if (el.running && el.startedAt) {
     duration += (Date.now() - el.startedAt);
   }
-  const record = {
-    id: 'tr_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7),
-    timerId: el.id,
-    title: el.title || (el.mode === 'pomodoro' ? 'Pomodoro Session' : 'Focus Session'),
-    mode: el.mode || 'stopwatch',
-    durationMs: duration,
-    laps: Array.isArray(el.laps) ? el.laps : [],
-    records: Array.isArray(el.records) ? el.records : [],
-    closedAt: Date.now(),
-    color: el.color || 'blueprint'
-  };
-  timerRecords.unshift(record);
+
+  // If timer had internal recorded sessions in el.records, ensure they are also saved to database
+  if (Array.isArray(el.records) && el.records.length > 0) {
+    el.records.forEach(r => {
+      const recId = r.id || ('tr_' + (r.completedAt || Date.now()));
+      const exists = timerRecords.some(x => x.id === recId || (x.timerId === el.id && x.closedAt === r.completedAt));
+      if (!exists && (r.durationMs > 0)) {
+        timerRecords.unshift({
+          id: recId,
+          timerId: el.id,
+          title: r.title || el.title || 'Timer Record',
+          mode: r.mode || el.mode || 'stopwatch',
+          durationMs: r.durationMs || 0,
+          laps: Array.isArray(r.laps) ? r.laps : [],
+          records: [],
+          closedAt: r.completedAt || Date.now(),
+          color: el.color || 'blueprint'
+        });
+      }
+    });
+  }
+
+  // Archive active / unrecorded session if time was accumulated or if no records existed
+  let record = null;
+  if (duration > 0 || !Array.isArray(el.records) || el.records.length === 0) {
+    record = {
+      id: 'tr_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7),
+      timerId: el.id,
+      title: el.title || (el.mode === 'pomodoro' ? 'Pomodoro Session' : 'Focus Session'),
+      mode: el.mode || 'stopwatch',
+      durationMs: duration,
+      laps: Array.isArray(el.laps) ? el.laps : [],
+      records: Array.isArray(el.records) ? el.records : [],
+      closedAt: Date.now(),
+      color: el.color || 'blueprint'
+    };
+    timerRecords.unshift(record);
+    console.log(`[*] Archived closed timer '${record.title}' (${Math.round(record.durationMs/1000)}s) to database.`);
+  }
+
   queueSaveTimerRecords();
-  console.log(`[*] Archived closed timer '${record.title}' (${Math.round(record.durationMs/1000)}s) to database.`);
   return record;
 }
 
@@ -120,21 +172,8 @@ app.get('/api/timer-records', (req, res) => {
 });
 
 app.post('/api/timer-records', (req, res) => {
-  const recordData = req.body;
-  if (!recordData) return res.status(400).json({ error: 'Missing record body' });
-  const record = {
-    id: recordData.id || ('tr_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7)),
-    timerId: recordData.timerId || null,
-    title: recordData.title || 'Timer Record',
-    mode: recordData.mode || 'stopwatch',
-    durationMs: Number(recordData.durationMs) || 0,
-    laps: Array.isArray(recordData.laps) ? recordData.laps : [],
-    records: Array.isArray(recordData.records) ? recordData.records : [],
-    closedAt: recordData.closedAt || Date.now(),
-    color: recordData.color || 'blueprint'
-  };
-  timerRecords.unshift(record);
-  queueSaveTimerRecords();
+  const record = saveDirectRecord(req.body);
+  if (!record) return res.status(400).json({ error: 'Missing record body' });
   res.json({ success: true, record });
 });
 
@@ -414,6 +453,13 @@ wss.on('connection', (ws) => {
             delete boardState[id];
             queueSave();
             broadcast(ws, { type: 'delete', id });
+          }
+          break;
+        }
+        case 'recordSession': {
+          const { record } = data;
+          if (record) {
+            saveDirectRecord(record);
           }
           break;
         }
