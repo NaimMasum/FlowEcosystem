@@ -727,6 +727,45 @@ function formatTimerTime(ms, includeHours = false) {
   return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
 }
 
+// ── Android Notification Bridge for Running Timers ──────────────
+let lastAndroidTimerNotifUpdate = 0;
+
+function syncAndroidTimerNotification(force = false) {
+  if (!window.AndroidBridge || typeof window.AndroidBridge.updateTimerNotification !== 'function') return;
+  const now = Date.now();
+  if (!force && (now - lastAndroidTimerNotifUpdate < 950)) return;
+  lastAndroidTimerNotifUpdate = now;
+
+  let activeTimer = null;
+  if (typeof elements === 'object' && elements) {
+    for (const id in elements) {
+      const item = elements[id];
+      if (item && item.type === 'timer' && item.running) {
+        activeTimer = item;
+        break;
+      }
+    }
+  }
+
+  if (activeTimer) {
+    const ms = getTimerCurrentMs(activeTimer);
+    const timeStr = formatTimerTime(ms, ms >= 3600000);
+    const title = activeTimer.title || (activeTimer.mode === 'pomodoro' ? 'Pomodoro Session' : 'Focus Session');
+    const mode = activeTimer.mode || 'stopwatch';
+    try {
+      window.AndroidBridge.updateTimerNotification(title, timeStr, mode, true);
+    } catch (e) {
+      console.warn('AndroidBridge update notification error:', e);
+    }
+  } else {
+    try {
+      if (typeof window.AndroidBridge.cancelTimerNotification === 'function') {
+        window.AndroidBridge.cancelTimerNotification();
+      }
+    } catch (e) {}
+  }
+}
+
 function ensureTimerTick(el) {
   if (el.running) {
     if (!activeTimerIntervals.has(el.id)) {
@@ -740,6 +779,7 @@ function ensureTimerTick(el) {
         if (digits) {
           const ms = getTimerCurrentMs(el);
           digits.textContent = formatTimerTime(ms, ms >= 3600000);
+          syncAndroidTimerNotification(false);
           if (el.mode === 'pomodoro' && ms <= 0 && el.running) {
             el.running = false;
             el.startedAt = null;
@@ -760,11 +800,18 @@ function ensureTimerTick(el) {
             syncTimerNode(node, el);
             sendOp('update', { element: el });
             saveSessionToDatabase(pomodoroRec, el);
+            if (window.AndroidBridge && typeof window.AndroidBridge.notifyTimerCompleted === 'function') {
+              try {
+                window.AndroidBridge.notifyTimerCompleted(el.title || 'Pomodoro Session', 'pomodoro');
+              } catch (e) {}
+            }
+            syncAndroidTimerNotification(true);
             showToast('🍅 Pomodoro complete & recorded!');
           }
         }
       }, 200);
       activeTimerIntervals.set(el.id, interval);
+      syncAndroidTimerNotification(true);
     }
   } else {
     stopTimerTick(el.id);
@@ -776,6 +823,7 @@ function stopTimerTick(id) {
     clearInterval(activeTimerIntervals.get(id));
     activeTimerIntervals.delete(id);
   }
+  syncAndroidTimerNotification(true);
 }
 
 function escapeHtml(str) {
@@ -872,6 +920,7 @@ function closeAndArchiveTimer(id) {
   selectedIds.delete(id);
   updateSelectionUI();
   sendOp('delete', { id });
+  syncAndroidTimerNotification(true);
   showToast('⏱️ Timer closed & archived to central database');
 }
 
@@ -927,6 +976,7 @@ function buildTimerContent(node, el) {
     stopTimerTick(el.id);
     syncTimerNode(node, el);
     sendOp('update', { element: el });
+    syncAndroidTimerNotification(true);
   });
 
   const recordsToggleBtn = document.createElement('button');
@@ -996,6 +1046,7 @@ function buildTimerContent(node, el) {
       ensureTimerTick(el);
       syncTimerNode(node, el);
       sendOp('update', { element: el });
+      syncAndroidTimerNotification(true);
     } else {
       // Pausing
       el.accumulatedMs = (el.accumulatedMs || 0) + (Date.now() - el.startedAt);
@@ -1004,6 +1055,7 @@ function buildTimerContent(node, el) {
       stopTimerTick(el.id);
       syncTimerNode(node, el);
       sendOp('update', { element: el });
+      syncAndroidTimerNotification(true);
     }
   });
 
@@ -1063,6 +1115,7 @@ function buildTimerContent(node, el) {
     syncTimerNode(node, el);
     sendOp('update', { element: el });
     saveSessionToDatabase(sessionRec, el);
+    syncAndroidTimerNotification(true);
     showToast('⏱️ Session recorded & saved to database!');
   });
 
@@ -1080,6 +1133,7 @@ function buildTimerContent(node, el) {
     stopTimerTick(el.id);
     syncTimerNode(node, el);
     sendOp('update', { element: el });
+    syncAndroidTimerNotification(true);
   });
 
   controls.appendChild(playBtn);

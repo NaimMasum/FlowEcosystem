@@ -28,6 +28,11 @@ import android.widget.Toast;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
+import android.app.Notification;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
+import android.app.PendingIntent;
+import android.content.Context;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
@@ -58,6 +63,12 @@ public class MainActivity extends Activity {
     private ValueCallback<Uri[]> mUploadMessage;
     private final static int FILECHOOSER_RESULTCODE = 1;
     private final static int INSTALL_PERMISSION_REQUEST_CODE = 1002;
+    private final static int NOTIFICATION_PERMISSION_REQUEST_CODE = 1003;
+
+    private final static String TIMER_CHANNEL_ID = "flow_timer_channel";
+    private final static String ALERT_CHANNEL_ID = "flow_timer_alert_channel";
+    private final static int TIMER_NOTIFICATION_ID = 2001;
+    private final static int ALERT_NOTIFICATION_ID = 2002;
 
     public class WebAppInterface {
         @JavascriptInterface
@@ -99,12 +110,166 @@ public class MainActivity extends Activity {
                 }
             });
         }
+
+        @JavascriptInterface
+        public void updateTimerNotification(final String title, final String timeText, final String mode, final boolean isRunning) {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    showOrUpdateTimerNotification(title, timeText, mode, isRunning);
+                }
+            });
+        }
+
+        @JavascriptInterface
+        public void cancelTimerNotification() {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    dismissTimerNotification();
+                }
+            });
+        }
+
+        @JavascriptInterface
+        public void notifyTimerCompleted(final String title, final String mode) {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    showTimerCompletedNotification(title, mode);
+                }
+            });
+        }
+    }
+
+    private void initNotificationChannels() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+            if (nm != null) {
+                NotificationChannel timerChannel = new NotificationChannel(
+                    TIMER_CHANNEL_ID,
+                    "Running Timers",
+                    NotificationManager.IMPORTANCE_LOW
+                );
+                timerChannel.setDescription("Shows real-time updates for active timers");
+                timerChannel.setShowBadge(false);
+                timerChannel.enableLights(false);
+                timerChannel.enableVibration(false);
+                nm.createNotificationChannel(timerChannel);
+
+                NotificationChannel alertChannel = new NotificationChannel(
+                    ALERT_CHANNEL_ID,
+                    "Timer Alerts",
+                    NotificationManager.IMPORTANCE_HIGH
+                );
+                alertChannel.setDescription("Alerts when a timer or pomodoro session completes");
+                alertChannel.enableLights(true);
+                alertChannel.enableVibration(true);
+                nm.createNotificationChannel(alertChannel);
+            }
+        }
+    }
+
+    private void showOrUpdateTimerNotification(String title, String timeText, String mode, boolean isRunning) {
+        try {
+            NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+            if (nm == null) return;
+
+            Intent intent = new Intent(this, MainActivity.class);
+            intent.setFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+            int flags = PendingIntent.FLAG_UPDATE_CURRENT;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                flags |= PendingIntent.FLAG_IMMUTABLE;
+            }
+            PendingIntent pendingIntent = PendingIntent.getActivity(this, 0, intent, flags);
+
+            Notification.Builder builder;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                builder = new Notification.Builder(this, TIMER_CHANNEL_ID);
+            } else {
+                builder = new Notification.Builder(this);
+            }
+
+            String displayTitle = (title != null && !title.trim().isEmpty()) ? title : "Focus Session";
+            String modeStr = "pomodoro".equalsIgnoreCase(mode) ? "🍅 Pomodoro" : "⏱️ Stopwatch";
+            String contentText = timeText + " • " + modeStr + (isRunning ? "" : " (Paused)");
+
+            builder.setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
+                   .setContentTitle(displayTitle)
+                   .setContentText(contentText)
+                   .setContentIntent(pendingIntent)
+                   .setOngoing(isRunning)
+                   .setOnlyAlertOnce(true)
+                   .setShowWhen(false);
+
+            nm.notify(TIMER_NOTIFICATION_ID, builder.build());
+        } catch (Exception e) {
+            Log.e("FlowApp", "Error displaying timer notification: " + e.getMessage());
+        }
+    }
+
+    private void dismissTimerNotification() {
+        try {
+            NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+            if (nm != null) {
+                nm.cancel(TIMER_NOTIFICATION_ID);
+            }
+        } catch (Exception e) {
+            Log.e("FlowApp", "Error dismissing timer notification: " + e.getMessage());
+        }
+    }
+
+    private void showTimerCompletedNotification(String title, String mode) {
+        try {
+            NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+            if (nm == null) return;
+
+            // Cancel active ticking notification
+            nm.cancel(TIMER_NOTIFICATION_ID);
+
+            Intent intent = new Intent(this, MainActivity.class);
+            intent.setFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+            int flags = PendingIntent.FLAG_UPDATE_CURRENT;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                flags |= PendingIntent.FLAG_IMMUTABLE;
+            }
+            PendingIntent pendingIntent = PendingIntent.getActivity(this, 0, intent, flags);
+
+            Notification.Builder builder;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                builder = new Notification.Builder(this, ALERT_CHANNEL_ID);
+            } else {
+                builder = new Notification.Builder(this);
+            }
+
+            String displayTitle = (title != null && !title.trim().isEmpty()) ? title : "Session";
+            String alertTitle = "pomodoro".equalsIgnoreCase(mode) ? "🍅 Pomodoro Complete!" : "⏱️ Timer Finished!";
+            String alertText = "\"" + displayTitle + "\" session completed. Great job!";
+
+            builder.setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
+                   .setContentTitle(alertTitle)
+                   .setContentText(alertText)
+                   .setContentIntent(pendingIntent)
+                   .setAutoCancel(true)
+                   .setDefaults(Notification.DEFAULT_ALL);
+
+            nm.notify(ALERT_NOTIFICATION_ID, builder.build());
+        } catch (Exception e) {
+            Log.e("FlowApp", "Error showing completion alert: " + e.getMessage());
+        }
     }
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         
+        initNotificationChannels();
+        if (Build.VERSION.SDK_INT >= 33) {
+            if (checkSelfPermission("android.permission.POST_NOTIFICATIONS") != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                requestPermissions(new String[]{"android.permission.POST_NOTIFICATIONS"}, NOTIFICATION_PERMISSION_REQUEST_CODE);
+            }
+        }
+
         mWebView = new WebView(this);
         setContentView(mWebView);
 
@@ -808,5 +973,11 @@ public class MainActivity extends Activity {
         } else {
             super.onBackPressed();
         }
+    }
+
+    @Override
+    protected void onDestroy() {
+        dismissTimerNotification();
+        super.onDestroy();
     }
 }
