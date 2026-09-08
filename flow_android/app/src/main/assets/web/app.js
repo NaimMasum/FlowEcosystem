@@ -108,7 +108,13 @@ const SHAPE_COLORS = {
 // ─────────────────────────────────────────────────────────────
 function init() {
   try {
-    const cached = localStorage.getItem('flow_note_state');
+    let cached = localStorage.getItem('flow_note_state');
+    if ((!cached || cached === '{}') && window.AndroidBridge && typeof window.AndroidBridge.getBoardState === 'function') {
+      const bridgeCached = window.AndroidBridge.getBoardState();
+      if (bridgeCached && bridgeCached !== '{}') {
+        cached = bridgeCached;
+      }
+    }
     if (cached) {
       elements = JSON.parse(cached);
       for (const el of Object.values(elements)) {
@@ -146,6 +152,11 @@ function init() {
 // ================= OFFLINE QUEUE HELPERS =================
 function saveLocalState() {
   try { localStorage.setItem('flow_note_state', JSON.stringify(elements)); } catch (e) {}
+  try {
+    if (window.AndroidBridge && typeof window.AndroidBridge.saveBoardState === 'function') {
+      window.AndroidBridge.saveBoardState(JSON.stringify(elements));
+    }
+  } catch (e) {}
 }
 
 function enqueueOp(type, payload) {
@@ -191,41 +202,59 @@ function resolveServerHost() {
 }
 
 function connectWebSocket() {
-  setStatus('connecting');
+  const isFile = location.protocol === 'file:';
   const targetHost = resolveServerHost();
+  if (isFile && (!targetHost || targetHost.startsWith('localhost') || targetHost.startsWith('127.0.0.1'))) {
+    setStatus('offline');
+    return;
+  }
+  setStatus('connecting');
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  ws = new WebSocket(`${proto}//${targetHost}`);
+  try {
+    ws = new WebSocket(`${proto}//${targetHost}`);
 
-  ws.onopen = () => {
-    setStatus('connected');
-    reconnectDelay = 1000;
-    flushOfflineQueue();
-    if (pingTimer) clearInterval(pingTimer);
-    pingTimer = setInterval(() => {
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'ping' }));
+    ws.onopen = () => {
+      setStatus('connected');
+      reconnectDelay = 1000;
+      flushOfflineQueue();
+      if (pingTimer) clearInterval(pingTimer);
+      pingTimer = setInterval(() => {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'ping' }));
+        }
+      }, 15000);
+    };
+
+    ws.onmessage = ({ data }) => {
+      try {
+        const parsed = JSON.parse(data);
+        if (parsed.type === 'pong') return;
+        handleServerMsg(parsed);
+      } catch (e) { console.error('WS parse error', e); }
+    };
+
+    ws.onclose = () => {
+      if (pingTimer) clearInterval(pingTimer);
+      setStatus(isFile ? 'offline' : 'disconnected');
+      setTimeout(() => {
+        reconnectDelay = Math.min(reconnectDelay * 2, MAX_RECONNECT);
+        connectWebSocket();
+      }, reconnectDelay);
+    };
+
+    ws.onerror = () => {
+      if (ws) {
+        try { ws.close(); } catch (e) {}
       }
-    }, 15000);
-  };
-
-  ws.onmessage = ({ data }) => {
-    try {
-      const parsed = JSON.parse(data);
-      if (parsed.type === 'pong') return;
-      handleServerMsg(parsed);
-    } catch (e) { console.error('WS parse error', e); }
-  };
-
-  ws.onclose = () => {
+    };
+  } catch (err) {
     if (pingTimer) clearInterval(pingTimer);
-    setStatus('disconnected');
+    setStatus(isFile ? 'offline' : 'disconnected');
     setTimeout(() => {
       reconnectDelay = Math.min(reconnectDelay * 2, MAX_RECONNECT);
       connectWebSocket();
     }, reconnectDelay);
-  };
-
-  ws.onerror = () => ws.close();
+  }
 }
 
 function sendOp(type, payload) {
@@ -241,7 +270,8 @@ function setStatus(state) {
   statusEl.className = `status-indicator ${state}`;
   statusText.textContent =
     state === 'connected'    ? 'Connected'     :
-    state === 'connecting'   ? 'Connecting…'   : 'Disconnected';
+    state === 'connecting'   ? 'Connecting…'   :
+    state === 'offline'      ? 'Offline Mode'  : 'Disconnected';
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -1769,8 +1799,13 @@ function uploadAndPlaceFile(file, cx, cy) {
   showToast('⏳ Uploading...');
   const reader = new FileReader();
   reader.onload = async ev => {
+    const isImage = file.type.startsWith('image/');
+    const host = resolveServerHost();
+    const uploadUrl = (location.protocol === 'file:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')
+      ? (host ? `http://${host}/upload` : '/upload')
+      : '/upload';
     try {
-      const res = await fetch('/upload', {
+      const res = await fetch(uploadUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ filename: file.name || 'PastedFile', fileData: ev.target.result })
@@ -1778,7 +1813,6 @@ function uploadAndPlaceFile(file, cx, cy) {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
       
-      const isImage = file.type.startsWith('image/');
       if (isImage) {
         placeImageAt(data.url, cx, cy);
       } else {
@@ -1786,8 +1820,14 @@ function uploadAndPlaceFile(file, cx, cy) {
       }
       showToast('✅ Upload complete');
     } catch (e) {
-      console.error(e);
-      showToast('❌ Upload failed');
+      if (isImage) {
+        // Fallback in offline mode: place the image locally using the data URL
+        placeImageAt(ev.target.result, cx, cy);
+        showToast('✅ Image placed locally (Offline)');
+      } else {
+        console.error(e);
+        showToast('❌ Upload failed (server offline)');
+      }
     }
   };
   reader.onerror = () => showToast('❌ Could not read file locally');
@@ -3260,8 +3300,13 @@ async function uploadFileToServer(file) {
     const reader = new FileReader();
     reader.onload = async ev => {
       const dataUrl = ev.target.result;
+      const isImage = file.type.startsWith('image/');
+      const host = resolveServerHost();
+      const uploadUrl = (location.protocol === 'file:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')
+        ? (host ? `http://${host}/upload` : '/upload')
+        : '/upload';
       try {
-        const res = await fetch('/upload', {
+        const res = await fetch(uploadUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ filename: file.name, fileData: dataUrl })
@@ -3269,7 +3314,6 @@ async function uploadFileToServer(file) {
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'Upload failed');
         
-        const isImage = file.type.startsWith('image/');
         pendingImageUrl = data.url;
         pendingFileType = isImage ? 'image' : 'file';
         pendingFileName = file.name;
@@ -3289,8 +3333,23 @@ async function uploadFileToServer(file) {
           setPreviewFile(file.name);
         }
       } catch (e) {
-        console.error(e);
-        setPreviewError('Failed to upload file.');
+        if (isImage) {
+          // Offline fallback for modal: allow inserting the image locally using the dataUrl
+          pendingImageUrl = dataUrl;
+          pendingFileType = 'image';
+          pendingFileName = file.name;
+          document.getElementById('image-submit-btn').disabled = false;
+          const img = new Image();
+          img.onload = () => {
+            pendingImageW = img.naturalWidth;
+            pendingImageH = img.naturalHeight;
+            setPreviewImage(dataUrl, img.naturalWidth, img.naturalHeight);
+          };
+          img.src = dataUrl;
+        } else {
+          console.error(e);
+          setPreviewError('Failed to upload file (server offline).');
+        }
       }
     };
     reader.onerror = () => setPreviewError('Could not read the file locally.');

@@ -58,6 +58,7 @@ public class MainActivity extends Activity {
     private ValueCallback<Uri[]> mUploadMessage;
     private final static int FILECHOOSER_RESULTCODE = 1;
     private final static int INSTALL_PERMISSION_REQUEST_CODE = 1002;
+    private boolean isOfflineMode = false;
 
     public class WebAppInterface {
         @JavascriptInterface
@@ -86,6 +87,23 @@ public class MainActivity extends Activity {
         }
 
         @JavascriptInterface
+        public void saveBoardState(String json) {
+            if (json != null && !json.isEmpty()) {
+                getSharedPreferences("FlowPrefs", MODE_PRIVATE).edit().putString("saved_board_state", json).apply();
+            }
+        }
+
+        @JavascriptInterface
+        public String getBoardState() {
+            return getSharedPreferences("FlowPrefs", MODE_PRIVATE).getString("saved_board_state", "");
+        }
+
+        @JavascriptInterface
+        public boolean isOffline() {
+            return isOfflineMode;
+        }
+
+        @JavascriptInterface
         public void checkForUpdate() {
             runOnUiThread(new Runnable() {
                 @Override
@@ -111,6 +129,8 @@ public class MainActivity extends Activity {
         WebSettings webSettings = mWebView.getSettings();
         webSettings.setJavaScriptEnabled(true);
         webSettings.setDomStorageEnabled(true);
+        webSettings.setDatabaseEnabled(true);
+        webSettings.setAllowFileAccess(true);
         webSettings.setAllowFileAccessFromFileURLs(true);
         webSettings.setAllowUniversalAccessFromFileURLs(true);
         
@@ -142,29 +162,31 @@ public class MainActivity extends Activity {
             public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
                 String url = request.getUrl().toString();
                 String path = request.getUrl().getPath();
+                if (path == null) path = "";
                 
                 try {
-                    // Intercept Flow Note (3939)
-                    if (url.contains(":" + NOTE_PORT)) {
-                        if (path.startsWith("/uploads/")) {
-                            File localFile = new File(getFilesDir() + path);
-                            if (localFile.exists()) {
-                                String mime = "application/octet-stream";
-                                if (path.endsWith(".png")) mime = "image/png";
-                                else if (path.endsWith(".jpg") || path.endsWith(".jpeg")) mime = "image/jpeg";
-                                else if (path.endsWith(".pdf")) mime = "application/pdf";
-                                WebResourceResponse response = new WebResourceResponse(mime, "UTF-8", new FileInputStream(localFile));
-                                java.util.Map<String, String> headers = new java.util.HashMap<>();
-                                headers.put("Access-Control-Allow-Origin", "*");
-                                headers.put("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-                                headers.put("Access-Control-Allow-Headers", "*");
-                                response.setResponseHeaders(headers);
-                                return response;
-                            }
+                    // 1. Intercept Flow Note uploads (saved locally in app files)
+                    if (path.contains("/uploads/")) {
+                        int uploadIdx = path.indexOf("/uploads/");
+                        String subPath = path.substring(uploadIdx);
+                        File localFile = new File(getFilesDir(), subPath);
+                        if (localFile.exists()) {
+                            String mime = "application/octet-stream";
+                            if (subPath.endsWith(".png")) mime = "image/png";
+                            else if (subPath.endsWith(".jpg") || subPath.endsWith(".jpeg")) mime = "image/jpeg";
+                            else if (subPath.endsWith(".pdf")) mime = "application/pdf";
+                            else if (subPath.endsWith(".svg")) mime = "image/svg+xml";
+                            WebResourceResponse response = new WebResourceResponse(mime, "UTF-8", new FileInputStream(localFile));
+                            java.util.Map<String, String> headers = new java.util.HashMap<>();
+                            headers.put("Access-Control-Allow-Origin", "*");
+                            headers.put("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+                            headers.put("Access-Control-Allow-Headers", "*");
+                            response.setResponseHeaders(headers);
+                            return response;
                         }
                     }
                     
-                    // Intercept Flow PDF Viewer (3940)
+                    // 2. Intercept Flow PDF Viewer (3940 / 4040)
                     if (url.contains(":" + PDF_PORT)) {
                         String assetPath = "pdf" + (path.equals("/") ? "/web/viewer.html" : path);
                         InputStream is = getAssets().open(assetPath);
@@ -184,6 +206,27 @@ public class MainActivity extends Activity {
                         response.setResponseHeaders(headers);
                         return response;
                     }
+
+                    // 3. Fallback intercept for localhost:3939 / 127.0.0.1:3939 offline web assets
+                    if (url.contains("localhost:" + NOTE_PORT) || url.contains("127.0.0.1:" + NOTE_PORT)) {
+                        String cleanPath = path.equals("/") || path.isEmpty() ? "index.html" : (path.startsWith("/") ? path.substring(1) : path);
+                        InputStream is = getAssets().open("web/" + cleanPath);
+                        String mime = "application/octet-stream";
+                        if (cleanPath.endsWith(".html")) mime = "text/html";
+                        else if (cleanPath.endsWith(".js")) mime = "application/javascript";
+                        else if (cleanPath.endsWith(".css")) mime = "text/css";
+                        else if (cleanPath.endsWith(".png")) mime = "image/png";
+                        else if (cleanPath.endsWith(".svg")) mime = "image/svg+xml";
+                        else if (cleanPath.endsWith(".json")) mime = "application/json";
+
+                        WebResourceResponse response = new WebResourceResponse(mime, "UTF-8", is);
+                        java.util.Map<String, String> headers = new java.util.HashMap<>();
+                        headers.put("Access-Control-Allow-Origin", "*");
+                        headers.put("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+                        headers.put("Access-Control-Allow-Headers", "*");
+                        response.setResponseHeaders(headers);
+                        return response;
+                    }
                 } catch (Exception e) {
                     Log.e("FlowApp", "Asset load error: " + e.getMessage());
                 }
@@ -193,7 +236,7 @@ public class MainActivity extends Activity {
 
             @Override
             public void onReceivedError(WebView view, int errorCode, String description, String failingUrl) {
-                if (failingUrl != null && failingUrl.contains(":" + NOTE_PORT)) {
+                if (failingUrl != null && failingUrl.contains(":" + NOTE_PORT) && !failingUrl.contains("localhost") && !failingUrl.contains("127.0.0.1") && !isOfflineMode) {
                     Log.w("FlowApp", "Server load failed, falling back to local offline assets: " + description);
                     runOnUiThread(new Runnable() {
                         @Override
@@ -201,6 +244,22 @@ public class MainActivity extends Activity {
                             loadApp("");
                         }
                     });
+                }
+            }
+
+            @Override
+            public void onReceivedError(WebView view, WebResourceRequest request, android.webkit.WebResourceError error) {
+                if (request != null && request.isForMainFrame()) {
+                    String failingUrl = request.getUrl() != null ? request.getUrl().toString() : "";
+                    if (failingUrl.contains(":" + NOTE_PORT) && !failingUrl.contains("localhost") && !failingUrl.contains("127.0.0.1") && !isOfflineMode) {
+                        Log.w("FlowApp", "Main frame server load failed, falling back to local offline assets");
+                        runOnUiThread(new Runnable() {
+                            @Override
+                            public void run() {
+                                loadApp("");
+                            }
+                        });
+                    }
                 }
             }
         });
@@ -266,20 +325,11 @@ public class MainActivity extends Activity {
 
     private void loadApp(String ip) {
         if (ip != null && !ip.isEmpty()) {
+            isOfflineMode = false;
             mWebView.loadUrl("http://" + ip + ":" + NOTE_PORT);
         } else {
-            try {
-                InputStream is = getAssets().open("web/index.html");
-                int size = is.available();
-                byte[] buffer = new byte[size];
-                is.read(buffer);
-                is.close();
-                String html = new String(buffer, "UTF-8");
-                String baseUrl = "http://localhost:" + NOTE_PORT + "/";
-                mWebView.loadDataWithBaseURL(baseUrl, html, "text/html", "UTF-8", null);
-            } catch (Exception e) {
-                Log.e("FlowApp", "Failed to load local HTML", e);
-            }
+            isOfflineMode = true;
+            mWebView.loadUrl("file:///android_asset/web/index.html");
         }
     }
 
@@ -403,7 +453,8 @@ public class MainActivity extends Activity {
                     runOnUiThread(new Runnable() {
                         @Override
                         public void run() {
-                            promptManualIp();
+                            Toast.makeText(MainActivity.this, "Server not found. Starting in Offline Mode.", Toast.LENGTH_SHORT).show();
+                            loadApp("");
                         }
                     });
                 }
@@ -464,7 +515,7 @@ public class MainActivity extends Activity {
                     scanNetwork();
                 } else if (which == 3) {
                     Toast.makeText(MainActivity.this, "Offline mode active.", Toast.LENGTH_SHORT).show();
-                    loadApp(lastIp.isEmpty() ? "127.0.0.1" : lastIp);
+                    loadApp("");
                 }
             }
         });

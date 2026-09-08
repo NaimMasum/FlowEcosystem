@@ -138,6 +138,8 @@ button {
 .status-indicator.reconnecting .status-dot { background: #f59e0b; animation: blink 1.4s ease infinite; }
 .status-indicator.disconnected { opacity: 1; }
 .status-indicator.disconnected .status-dot { background: #ef4444; }
+.status-indicator.offline { opacity: 1; cursor: pointer; }
+.status-indicator.offline .status-dot { background: #3b82f6; }
 
 @keyframes blink {
   0%, 100% { opacity: 1; }
