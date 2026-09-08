@@ -743,11 +743,22 @@ function ensureTimerTick(el) {
           if (el.mode === 'pomodoro' && ms <= 0 && el.running) {
             el.running = false;
             el.startedAt = null;
-            el.accumulatedMs = el.pomodoroDurationMs || 25 * 60 * 1000;
+            el.accumulatedMs = 0;
             stopTimerTick(el.id);
+            if (!Array.isArray(el.records)) el.records = [];
+            el.records.unshift({
+              id: 'rec_' + Math.random().toString(36).slice(2, 9),
+              title: el.title || 'Pomodoro Session',
+              mode: 'pomodoro',
+              durationMs: el.pomodoroDurationMs || 25 * 60 * 1000,
+              completedAt: Date.now(),
+              lapsCount: (el.laps || []).length,
+              laps: (el.laps || []).slice()
+            });
+            el.laps = [];
             syncTimerNode(node, el);
             sendOp('update', { element: el });
-            showToast('🍅 Pomodoro complete!');
+            showToast('🍅 Pomodoro complete & recorded!');
           }
         }
       }, 200);
@@ -765,12 +776,86 @@ function stopTimerTick(id) {
   }
 }
 
+function escapeHtml(str) {
+  if (!str) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
+function formatRecordDate(ts) {
+  const d = new Date(ts);
+  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const m = months[d.getMonth()];
+  const date = d.getDate();
+  let hrs = d.getHours();
+  const mins = String(d.getMinutes()).padStart(2, '0');
+  const ampm = hrs >= 12 ? 'PM' : 'AM';
+  hrs = hrs % 12 || 12;
+  return `${m} ${date}, ${hrs}:${mins} ${ampm}`;
+}
+
+function pinRecordToNote(el, rec) {
+  const noteId = 'e' + Math.random().toString(36).slice(2, 11);
+  const durationStr = formatTimerTime(rec.durationMs, rec.durationMs >= 3600000);
+  const dateStr = formatRecordDate(rec.completedAt);
+  const modeLabel = rec.mode === 'pomodoro' ? '🍅 Pomodoro' : '⏱️ Stopwatch';
+
+  let lines = [
+    `⏱️ ${rec.title || 'Timer Record'}`,
+    `────────────────────`,
+    `Mode: ${modeLabel}`,
+    `Duration: ${durationStr}`,
+    `Recorded: ${dateStr}`
+  ];
+
+  if (Array.isArray(rec.laps) && rec.laps.length > 0) {
+    lines.push(`\nLaps (${rec.laps.length}):`);
+    rec.laps.forEach((lap, i) => {
+      lines.push(`• Lap ${rec.laps.length - i}: ${formatTimerTime(lap.timeMs, lap.timeMs >= 3600000)}`);
+    });
+  }
+
+  const noteEl = {
+    id: noteId,
+    type: 'note',
+    color: el.color || 'yellow',
+    zIndex: nextZ(),
+    x: el.x + el.w + 24,
+    y: el.y,
+    w: 220,
+    h: 220,
+    text: lines.join('\n')
+  };
+
+  elements[noteId] = noteEl;
+  mountElement(noteEl, true);
+  select(noteId, false);
+  sendOp('add', { element: noteEl });
+  showToast('📌 Record pinned to note!');
+}
+
+function closeAndArchiveTimer(id) {
+  const el = elements[id];
+  if (!el) return;
+  stopTimerTick(id);
+  delete elements[id];
+  unmountElement(id);
+  selectedIds.delete(id);
+  updateSelectionUI();
+  sendOp('delete', { id });
+  showToast('⏱️ Timer closed & archived to central database');
+}
+
 function buildTimerContent(node, el) {
   node.classList.add('timer-element');
   const inner = document.createElement('div');
   inner.className = 'timer-card-inner';
 
-  // 1. Header: Icon + Title Input + Mode Toggle Badge
+  // 1. Header: Icon + Title Input + Header Actions (Mode toggle + Records toggle + Close)
   const header = document.createElement('div');
   header.className = 'timer-header';
 
@@ -801,6 +886,9 @@ function buildTimerContent(node, el) {
   titleWrap.appendChild(icon);
   titleWrap.appendChild(titleInput);
 
+  const headerActions = document.createElement('div');
+  headerActions.className = 'timer-header-actions';
+
   const modeBtn = document.createElement('button');
   modeBtn.className = 'timer-mode-btn';
   modeBtn.title = 'Click to toggle between Stopwatch and Pomodoro';
@@ -816,10 +904,38 @@ function buildTimerContent(node, el) {
     sendOp('update', { element: el });
   });
 
-  header.appendChild(titleWrap);
-  header.appendChild(modeBtn);
+  const recordsToggleBtn = document.createElement('button');
+  recordsToggleBtn.className = 'timer-view-btn';
+  recordsToggleBtn.title = 'View recorded sessions';
+  recordsToggleBtn.innerHTML = `<span>History</span> <span class="records-count">0</span>`;
+  recordsToggleBtn.addEventListener('pointerdown', e => e.stopPropagation());
+  recordsToggleBtn.addEventListener('click', e => {
+    e.stopPropagation();
+    node.dataset.view = (node.dataset.view === 'records' ? 'timer' : 'records');
+    syncTimerNode(node, el);
+  });
 
-  // 2. Display: Digital Digits + Status Badge
+  const closeCardBtn = document.createElement('button');
+  closeCardBtn.className = 'timer-close-btn';
+  closeCardBtn.title = 'Close & archive timer to database';
+  closeCardBtn.innerHTML = `<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`;
+  closeCardBtn.addEventListener('pointerdown', e => e.stopPropagation());
+  closeCardBtn.addEventListener('click', e => {
+    e.stopPropagation();
+    closeAndArchiveTimer(el.id);
+  });
+
+  headerActions.appendChild(modeBtn);
+  headerActions.appendChild(recordsToggleBtn);
+  headerActions.appendChild(closeCardBtn);
+
+  header.appendChild(titleWrap);
+  header.appendChild(headerActions);
+
+  // 2. MAIN TIMER VIEW
+  const mainView = document.createElement('div');
+  mainView.className = 'timer-main-view';
+
   const displayWrap = document.createElement('div');
   displayWrap.className = 'timer-display-wrap';
 
@@ -833,7 +949,7 @@ function buildTimerContent(node, el) {
   displayWrap.appendChild(digits);
   displayWrap.appendChild(statusBadge);
 
-  // 3. Controls: Play/Pause, Reset, Lap
+  // Controls: Play/Pause, Lap, Record, Reset
   const controls = document.createElement('div');
   controls.className = 'timer-controls';
 
@@ -866,21 +982,6 @@ function buildTimerContent(node, el) {
     }
   });
 
-  const resetBtn = document.createElement('button');
-  resetBtn.className = 'timer-btn timer-reset-btn';
-  resetBtn.title = 'Reset timer';
-  resetBtn.innerHTML = `<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg><span>Reset</span>`;
-  resetBtn.addEventListener('pointerdown', e => e.stopPropagation());
-  resetBtn.addEventListener('click', e => {
-    e.stopPropagation();
-    el.running = false;
-    el.startedAt = null;
-    el.accumulatedMs = 0;
-    stopTimerTick(el.id);
-    syncTimerNode(node, el);
-    sendOp('update', { element: el });
-  });
-
   const lapBtn = document.createElement('button');
   lapBtn.className = 'timer-btn timer-lap-btn';
   lapBtn.title = 'Record split / lap';
@@ -901,21 +1002,126 @@ function buildTimerContent(node, el) {
     }
   });
 
-  controls.appendChild(playBtn);
-  controls.appendChild(resetBtn);
-  controls.appendChild(lapBtn);
+  const recordBtn = document.createElement('button');
+  recordBtn.className = 'timer-btn timer-record-btn';
+  recordBtn.title = 'Save current session to history';
+  recordBtn.innerHTML = `<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3.5" fill="#ef4444" stroke="#ef4444"/></svg><span>Record</span>`;
+  recordBtn.addEventListener('pointerdown', e => e.stopPropagation());
+  recordBtn.addEventListener('click', e => {
+    e.stopPropagation();
+    const currentMs = getTimerCurrentMs(el);
+    if (currentMs <= 0 && !el.running && (!el.accumulatedMs || el.accumulatedMs <= 0)) {
+      showToast('Start the timer first to record');
+      return;
+    }
+    if (el.running) {
+      el.accumulatedMs = (el.accumulatedMs || 0) + (Date.now() - el.startedAt);
+      el.running = false;
+      el.startedAt = null;
+      stopTimerTick(el.id);
+    }
+    const sessionDuration = el.accumulatedMs || currentMs;
+    if (!Array.isArray(el.records)) el.records = [];
+    el.records.unshift({
+      id: 'rec_' + Math.random().toString(36).slice(2, 9),
+      title: el.title || (el.mode === 'pomodoro' ? 'Pomodoro Session' : 'Focus Session'),
+      mode: el.mode,
+      durationMs: sessionDuration,
+      completedAt: Date.now(),
+      lapsCount: (el.laps || []).length,
+      laps: (el.laps || []).slice()
+    });
+    el.accumulatedMs = 0;
+    el.laps = [];
+    node.dataset.view = 'records';
+    syncTimerNode(node, el);
+    sendOp('update', { element: el });
+    showToast('⏱️ Session recorded!');
+  });
 
-  // 4. Laps / Splits container
+  const resetBtn = document.createElement('button');
+  resetBtn.className = 'timer-btn timer-reset-btn';
+  resetBtn.title = 'Reset timer';
+  resetBtn.innerHTML = `<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg><span>Reset</span>`;
+  resetBtn.addEventListener('pointerdown', e => e.stopPropagation());
+  resetBtn.addEventListener('click', e => {
+    e.stopPropagation();
+    el.running = false;
+    el.startedAt = null;
+    el.accumulatedMs = 0;
+    el.laps = [];
+    stopTimerTick(el.id);
+    syncTimerNode(node, el);
+    sendOp('update', { element: el });
+  });
+
+  controls.appendChild(playBtn);
+  controls.appendChild(lapBtn);
+  controls.appendChild(recordBtn);
+  controls.appendChild(resetBtn);
+
+  // Laps container
   const lapsContainer = document.createElement('div');
   lapsContainer.className = 'timer-laps-container';
 
+  mainView.appendChild(displayWrap);
+  mainView.appendChild(controls);
+  mainView.appendChild(lapsContainer);
+
+  // 3. RECORDS VIEW
+  const recordsView = document.createElement('div');
+  recordsView.className = 'timer-records-view';
+  recordsView.style.display = 'none';
+
+  const recordsHeader = document.createElement('div');
+  recordsHeader.className = 'timer-records-header';
+
+  const backBtn = document.createElement('button');
+  backBtn.className = 'timer-rec-nav-btn';
+  backBtn.title = 'Back to timer';
+  backBtn.innerHTML = `<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5"/><polyline points="12 19 5 12 12 5"/></svg><span>Timer</span>`;
+  backBtn.addEventListener('pointerdown', e => e.stopPropagation());
+  backBtn.addEventListener('click', e => {
+    e.stopPropagation();
+    node.dataset.view = 'timer';
+    syncTimerNode(node, el);
+  });
+
+  const recordsTitle = document.createElement('div');
+  recordsTitle.className = 'timer-records-title';
+  recordsTitle.textContent = 'Session History';
+
+  const clearRecordsBtn = document.createElement('button');
+  clearRecordsBtn.className = 'timer-rec-nav-btn danger';
+  clearRecordsBtn.title = 'Clear all recorded sessions';
+  clearRecordsBtn.textContent = 'Clear';
+  clearRecordsBtn.addEventListener('pointerdown', e => e.stopPropagation());
+  clearRecordsBtn.addEventListener('click', e => {
+    e.stopPropagation();
+    if (!el.records || el.records.length === 0) return;
+    el.records = [];
+    syncTimerNode(node, el);
+    sendOp('update', { element: el });
+    showToast('Records cleared');
+  });
+
+  recordsHeader.appendChild(backBtn);
+  recordsHeader.appendChild(recordsTitle);
+  recordsHeader.appendChild(clearRecordsBtn);
+
+  const recordsList = document.createElement('div');
+  recordsList.className = 'timer-records-list';
+
+  recordsView.appendChild(recordsHeader);
+  recordsView.appendChild(recordsList);
+
   inner.appendChild(header);
-  inner.appendChild(displayWrap);
-  inner.appendChild(controls);
-  inner.appendChild(lapsContainer);
+  inner.appendChild(mainView);
+  inner.appendChild(recordsView);
   node.appendChild(inner);
 
   // Initial populate
+  node.dataset.view = 'timer';
   syncTimerNode(node, el);
   ensureTimerTick(el);
 }
@@ -925,16 +1131,33 @@ function syncTimerNode(node, el) {
   const isRunning = Boolean(el.running);
   node.classList.toggle('running', isRunning);
 
+  if (!Array.isArray(el.records)) el.records = [];
+
   // Mode badge
   const modeBtn = node.querySelector('.timer-mode-btn');
   if (modeBtn) {
     modeBtn.textContent = el.mode === 'pomodoro' ? '🍅 Pomodoro' : '⏱️ Stopwatch';
   }
 
+  // Records toggle button count
+  const recordsCountEl = node.querySelector('.records-count');
+  if (recordsCountEl) {
+    recordsCountEl.textContent = el.records.length;
+  }
+
   // Title
   const titleInput = node.querySelector('.timer-title-input');
   if (titleInput && document.activeElement !== titleInput) {
     titleInput.value = el.title || 'Focus Session';
+  }
+
+  // View toggle visibility
+  const isRecordsView = (node.dataset.view === 'records');
+  const mainView = node.querySelector('.timer-main-view');
+  const recordsView = node.querySelector('.timer-records-view');
+  if (mainView && recordsView) {
+    mainView.style.display = isRecordsView ? 'none' : 'flex';
+    recordsView.style.display = isRecordsView ? 'flex' : 'none';
   }
 
   // Digits
@@ -980,6 +1203,63 @@ function syncTimerNode(node, el) {
         row.innerHTML = `<span>Lap ${num}</span><span>${formatTimerTime(lap.timeMs, lap.timeMs >= 3600000)}</span>`;
         lapsContainer.appendChild(row);
       });
+    }
+  }
+
+  // Records list
+  if (recordsView) {
+    const listContainer = recordsView.querySelector('.timer-records-list');
+    if (listContainer) {
+      listContainer.innerHTML = '';
+      if (el.records.length === 0) {
+        listContainer.innerHTML = `<div class="timer-records-empty">No recorded sessions yet.<br>Click <strong>Record</strong> to save one!</div>`;
+      } else {
+        el.records.forEach((rec, idx) => {
+          const item = document.createElement('div');
+          item.className = 'timer-record-item';
+
+          const timeFormatted = formatTimerTime(rec.durationMs, rec.durationMs >= 3600000);
+          const dateFormatted = formatRecordDate(rec.completedAt);
+          const modeIcon = rec.mode === 'pomodoro' ? '🍅' : '⏱️';
+
+          item.innerHTML = `
+            <div class="timer-record-top">
+              <span class="timer-record-title" title="${escapeHtml(rec.title || 'Session')}">${escapeHtml(rec.title || 'Session')}</span>
+              <span class="timer-record-duration">${modeIcon} ${timeFormatted}</span>
+            </div>
+            <div class="timer-record-meta">
+              <span>${dateFormatted}${rec.lapsCount ? ` • ${rec.lapsCount} lap${rec.lapsCount > 1 ? 's' : ''}` : ''}</span>
+              <div class="timer-record-actions">
+                <button class="timer-rec-btn pin-btn" title="Pin as note card onto canvas">
+                  <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path d="M9 2h6l1 7H8l1-7z"/><path d="M5 9h14l-1 8H6L5 9z"/></svg>
+                  <span>Note</span>
+                </button>
+                <button class="timer-rec-btn del-btn" title="Delete record">
+                  <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                </button>
+              </div>
+            </div>
+          `;
+
+          const pinBtn = item.querySelector('.pin-btn');
+          pinBtn.addEventListener('pointerdown', e => e.stopPropagation());
+          pinBtn.addEventListener('click', e => {
+            e.stopPropagation();
+            pinRecordToNote(el, rec);
+          });
+
+          const delBtn = item.querySelector('.del-btn');
+          delBtn.addEventListener('pointerdown', e => e.stopPropagation());
+          delBtn.addEventListener('click', e => {
+            e.stopPropagation();
+            el.records.splice(idx, 1);
+            syncTimerNode(node, el);
+            sendOp('update', { element: el });
+          });
+
+          listContainer.appendChild(item);
+        });
+      }
     }
   }
 
@@ -2069,10 +2349,11 @@ function createElement(type, wx, wy) {
     Object.assign(el, { x: wx - 110, y: wy - 110, w: 220, h: 220, text: '' });
   } else if (type === 'timer') {
     Object.assign(el, {
-      x: wx - 130, y: wy - 105, w: 260, h: 210,
+      x: wx - 140, y: wy - 112, w: 280, h: 225,
       title: 'Focus Session', mode: 'stopwatch',
       accumulatedMs: 0, running: false, startedAt: null,
-      pomodoroDurationMs: 25 * 60 * 1000, laps: []
+      pomodoroDurationMs: 25 * 60 * 1000, laps: [],
+      records: []
     });
   } else if (type === 'rect' || type === 'ellipse') {
     Object.assign(el, { x: wx - 80, y: wy - 60, w: 160, h: 120 });
@@ -2381,6 +2662,269 @@ function setupModals() {
       });
     }
   });
+
+  setupTimerRecordsModal();
+}
+
+// ── Central Timer Records Database Modal ──────────────────────
+let cachedTimerDbRecords = [];
+
+function setupTimerRecordsModal() {
+  const modal = document.getElementById('timer-records-modal');
+  if (!modal) return;
+  const backdrop = document.getElementById('records-modal-backdrop');
+  const closeBtn = document.getElementById('records-modal-close');
+  const doneBtn = document.getElementById('records-done-btn');
+  const searchInput = document.getElementById('records-search-input');
+  const exportBtn = document.getElementById('records-export-btn');
+  const clearAllBtn = document.getElementById('records-clear-all-btn');
+
+  const closeModal = () => {
+    modal.classList.remove('open');
+  };
+
+  closeBtn?.addEventListener('click', closeModal);
+  doneBtn?.addEventListener('click', closeModal);
+  backdrop?.addEventListener('click', closeModal);
+
+  // Desktop and Mobile trigger buttons
+  document.getElementById('tool-timer-records')?.addEventListener('click', openTimerRecordsModal);
+  document.getElementById('m-tool-timer-records')?.addEventListener('click', openTimerRecordsModal);
+
+  // Search filter
+  searchInput?.addEventListener('input', () => {
+    const q = searchInput.value.trim().toLowerCase();
+    const filtered = cachedTimerDbRecords.filter(r => 
+      (r.title && r.title.toLowerCase().includes(q)) ||
+      (r.mode && r.mode.toLowerCase().includes(q))
+    );
+    renderTimerDbList(filtered);
+  });
+
+  // Export database
+  exportBtn?.addEventListener('click', () => {
+    window.open('/api/timer-records/export', '_blank');
+  });
+
+  // Clear all database
+  clearAllBtn?.addEventListener('click', async () => {
+    if (!cachedTimerDbRecords.length) return;
+    if (!confirm('Are you sure you want to permanently clear all closed timer records from the database?')) return;
+    try {
+      const res = await fetch('/api/timer-records', { method: 'DELETE' });
+      if (res.ok) {
+        showToast('Timer records database cleared');
+        loadTimerRecordsDatabase();
+      }
+    } catch (e) {
+      console.error('Failed to clear timer records:', e);
+    }
+  });
+}
+
+async function openTimerRecordsModal() {
+  const modal = document.getElementById('timer-records-modal');
+  if (!modal) return;
+  modal.classList.add('open');
+  const searchInput = document.getElementById('records-search-input');
+  if (searchInput) searchInput.value = '';
+  await loadTimerRecordsDatabase();
+}
+
+async function loadTimerRecordsDatabase() {
+  const listContainer = document.getElementById('records-db-list');
+  const totalCountEl = document.getElementById('db-total-count');
+  const totalTimeEl = document.getElementById('db-total-time');
+
+  if (listContainer) {
+    listContainer.innerHTML = `<div class="records-db-empty">Loading records database...</div>`;
+  }
+
+  try {
+    const res = await fetch('/api/timer-records');
+    if (!res.ok) throw new Error('Failed to fetch records');
+    const data = await res.json();
+    cachedTimerDbRecords = data.records || [];
+
+    if (totalCountEl) totalCountEl.textContent = data.totalCount || 0;
+    if (totalTimeEl) totalTimeEl.textContent = formatTimerTime(data.totalDurationMs || 0, true);
+
+    renderTimerDbList(cachedTimerDbRecords);
+  } catch (err) {
+    console.error('Error loading timer records database:', err);
+    if (listContainer) {
+      listContainer.innerHTML = `<div class="records-db-empty" style="color:#ef4444;">Failed to load records database.</div>`;
+    }
+  }
+}
+
+function renderTimerDbList(records) {
+  const listContainer = document.getElementById('records-db-list');
+  if (!listContainer) return;
+  listContainer.innerHTML = '';
+
+  if (!records || records.length === 0) {
+    listContainer.innerHTML = `
+      <div class="records-db-empty">
+        No archived timers found in the database.<br>
+        Closing or deleting any timer on the board automatically archives it here!
+      </div>
+    `;
+    return;
+  }
+
+  records.forEach(rec => {
+    const item = document.createElement('div');
+    item.className = 'records-db-item';
+
+    const durationStr = formatTimerTime(rec.durationMs, true);
+    const dateStr = formatRecordDate(rec.closedAt);
+    const modeBadge = rec.mode === 'pomodoro' ? '🍅 Pomodoro' : '⏱️ Stopwatch';
+    const lapsText = rec.laps && rec.laps.length > 0 ? ` • ${rec.laps.length} lap${rec.laps.length > 1 ? 's' : ''}` : '';
+
+    item.innerHTML = `
+      <div class="records-db-item-top">
+        <div class="records-db-title-wrap">
+          <span class="records-db-title" title="${escapeHtml(rec.title || 'Timer')}">${escapeHtml(rec.title || 'Timer')}</span>
+          <span class="records-db-mode-badge">${modeBadge}</span>
+        </div>
+        <div class="records-db-duration">${durationStr}</div>
+      </div>
+      <div class="records-db-item-meta">
+        <span>Closed ${dateStr}${lapsText}</span>
+        <div class="records-db-actions">
+          <button class="records-item-btn restore" title="Restore timer back onto active board">
+            <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
+            <span>Restore</span>
+          </button>
+          <button class="records-item-btn pin-note" title="Create sticky note with summary">
+            <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path d="M9 2h6l1 7H8l1-7z"/><path d="M5 9h14l-1 8H6L5 9z"/></svg>
+            <span>Note</span>
+          </button>
+          <button class="records-item-btn delete" title="Delete from database">
+            <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+          </button>
+        </div>
+      </div>
+    `;
+
+    // Restore button
+    const restoreBtn = item.querySelector('.records-item-btn.restore');
+    restoreBtn?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      restoreTimerToBoard(rec);
+    });
+
+    // Note button
+    const noteBtn = item.querySelector('.records-item-btn.pin-note');
+    noteBtn?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      pinArchivedRecordToNote(rec);
+    });
+
+    // Delete button
+    const delBtn = item.querySelector('.records-item-btn.delete');
+    delBtn?.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      try {
+        const res = await fetch(`/api/timer-records/${rec.id}`, { method: 'DELETE' });
+        if (res.ok) {
+          showToast('Record removed from database');
+          cachedTimerDbRecords = cachedTimerDbRecords.filter(r => r.id !== rec.id);
+          renderTimerDbList(cachedTimerDbRecords);
+          const totalCountEl = document.getElementById('db-total-count');
+          const totalTimeEl = document.getElementById('db-total-time');
+          if (totalCountEl) totalCountEl.textContent = cachedTimerDbRecords.length;
+          const sum = cachedTimerDbRecords.reduce((acc, r) => acc + (r.durationMs || 0), 0);
+          if (totalTimeEl) totalTimeEl.textContent = formatTimerTime(sum, true);
+        }
+      } catch (err) {
+        console.error('Failed to delete timer record:', err);
+      }
+    });
+
+    listContainer.appendChild(item);
+  });
+}
+
+function restoreTimerToBoard(rec) {
+  const newId = 'e' + Math.random().toString(36).slice(2, 11);
+  const vpW = viewport.clientWidth, vpH = viewport.clientHeight;
+  const center = clientToWorld(vpW / 2, vpH / 2);
+
+  const restoredEl = {
+    id: newId,
+    type: 'timer',
+    color: rec.color || 'blueprint',
+    zIndex: nextZ(),
+    x: center.x - 140,
+    y: center.y - 112,
+    w: 280,
+    h: 225,
+    title: rec.title || 'Focus Session',
+    mode: rec.mode || 'stopwatch',
+    accumulatedMs: rec.durationMs || 0,
+    running: false,
+    startedAt: null,
+    pomodoroDurationMs: 25 * 60 * 1000,
+    laps: Array.isArray(rec.laps) ? [...rec.laps] : [],
+    records: Array.isArray(rec.records) ? [...rec.records] : []
+  };
+
+  elements[newId] = restoredEl;
+  mountElement(restoredEl, true);
+  select(newId, false);
+  sendOp('add', { element: restoredEl });
+
+  const modal = document.getElementById('timer-records-modal');
+  modal?.classList.remove('open');
+  showToast(`⏱️ Restored '${rec.title || 'Timer'}' to board!`);
+}
+
+function pinArchivedRecordToNote(rec) {
+  const noteId = 'e' + Math.random().toString(36).slice(2, 11);
+  const durationStr = formatTimerTime(rec.durationMs, true);
+  const dateStr = formatRecordDate(rec.closedAt);
+  const modeLabel = rec.mode === 'pomodoro' ? '🍅 Pomodoro' : '⏱️ Stopwatch';
+
+  let lines = [
+    `⏱️ ${rec.title || 'Timer Record'}`,
+    `────────────────────`,
+    `Mode: ${modeLabel}`,
+    `Total Time: ${durationStr}`,
+    `Archived: ${dateStr}`
+  ];
+
+  if (Array.isArray(rec.laps) && rec.laps.length > 0) {
+    lines.push(`\nLaps (${rec.laps.length}):`);
+    rec.laps.forEach((lap, i) => {
+      lines.push(`• Lap ${rec.laps.length - i}: ${formatTimerTime(lap.timeMs, lap.timeMs >= 3600000)}`);
+    });
+  }
+
+  const vpW = viewport.clientWidth, vpH = viewport.clientHeight;
+  const center = clientToWorld(vpW / 2, vpH / 2);
+
+  const noteEl = {
+    id: noteId,
+    type: 'note',
+    color: rec.color || 'yellow',
+    zIndex: nextZ(),
+    x: center.x - 110,
+    y: center.y - 110,
+    w: 220,
+    h: 220,
+    text: lines.join('\n')
+  };
+
+  elements[noteId] = noteEl;
+  mountElement(noteEl, true);
+  select(noteId, false);
+  sendOp('add', { element: noteEl });
+
+  const modal = document.getElementById('timer-records-modal');
+  modal?.classList.remove('open');
+  showToast('📌 Record pinned to note!');
 }
 
 // ── URL probing (Images & Link Cards) ──────────────────────────

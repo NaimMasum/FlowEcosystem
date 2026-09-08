@@ -13,6 +13,10 @@ const DATA_FILE = path.join(DATA_DIR, 'board.json');
 // In-memory board state: Map of elementId -> elementObject
 let boardState = {};
 
+// Central Timer Records Database
+const TIMER_RECORDS_FILE = path.join(DATA_DIR, 'timer_records.json');
+let timerRecords = [];
+
 // Ensure data directory and file exist
 if (!fs.existsSync(DATA_DIR)) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -30,7 +34,19 @@ if (fs.existsSync(DATA_FILE)) {
   fs.writeFileSync(DATA_FILE, JSON.stringify({}, null, 2), 'utf8');
 }
 
-// Debounced file write
+if (fs.existsSync(TIMER_RECORDS_FILE)) {
+  try {
+    const data = fs.readFileSync(TIMER_RECORDS_FILE, 'utf8');
+    timerRecords = JSON.parse(data || '[]');
+  } catch (err) {
+    console.error('Error reading timer_records.json, starting fresh:', err);
+    timerRecords = [];
+  }
+} else {
+  fs.writeFileSync(TIMER_RECORDS_FILE, JSON.stringify([], null, 2), 'utf8');
+}
+
+// Debounced file write for board
 let saveTimeout = null;
 function queueSave() {
   if (saveTimeout) clearTimeout(saveTimeout);
@@ -45,13 +61,106 @@ function queueSave() {
   }, 1000); // 1-second debounce
 }
 
+// Debounced file write for timer records database
+let saveTimerRecordsTimeout = null;
+function queueSaveTimerRecords() {
+  if (saveTimerRecordsTimeout) clearTimeout(saveTimerRecordsTimeout);
+  saveTimerRecordsTimeout = setTimeout(() => {
+    fs.writeFile(TIMER_RECORDS_FILE, JSON.stringify(timerRecords, null, 2), 'utf8', (err) => {
+      if (err) {
+        console.error('Error saving timer records database to disk:', err);
+      } else {
+        console.log('Timer records database successfully persisted to disk.');
+      }
+    });
+  }, 1000);
+}
+
+// Central auto-archival for closed timers
+function archiveClosedTimer(el) {
+  if (!el || el.type !== 'timer') return null;
+  let duration = el.accumulatedMs || 0;
+  if (el.running && el.startedAt) {
+    duration += (Date.now() - el.startedAt);
+  }
+  const record = {
+    id: 'tr_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7),
+    timerId: el.id,
+    title: el.title || (el.mode === 'pomodoro' ? 'Pomodoro Session' : 'Focus Session'),
+    mode: el.mode || 'stopwatch',
+    durationMs: duration,
+    laps: Array.isArray(el.laps) ? el.laps : [],
+    records: Array.isArray(el.records) ? el.records : [],
+    closedAt: Date.now(),
+    color: el.color || 'blueprint'
+  };
+  timerRecords.unshift(record);
+  queueSaveTimerRecords();
+  console.log(`[*] Archived closed timer '${record.title}' (${Math.round(record.durationMs/1000)}s) to database.`);
+  return record;
+}
+
 const UPLOADS_DIR = path.join(DATA_DIR, 'uploads');
 if (!fs.existsSync(UPLOADS_DIR)) {
   fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 }
 
 const app = express();
+app.use(express.json({ limit: '10mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
+
+// ── Central Timer Records Database API ────────────────────────
+app.get('/api/timer-records', (req, res) => {
+  const totalDurationMs = timerRecords.reduce((sum, r) => sum + (r.durationMs || 0), 0);
+  res.json({
+    records: timerRecords,
+    totalCount: timerRecords.length,
+    totalDurationMs
+  });
+});
+
+app.post('/api/timer-records', (req, res) => {
+  const recordData = req.body;
+  if (!recordData) return res.status(400).json({ error: 'Missing record body' });
+  const record = {
+    id: recordData.id || ('tr_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7)),
+    timerId: recordData.timerId || null,
+    title: recordData.title || 'Timer Record',
+    mode: recordData.mode || 'stopwatch',
+    durationMs: Number(recordData.durationMs) || 0,
+    laps: Array.isArray(recordData.laps) ? recordData.laps : [],
+    records: Array.isArray(recordData.records) ? recordData.records : [],
+    closedAt: recordData.closedAt || Date.now(),
+    color: recordData.color || 'blueprint'
+  };
+  timerRecords.unshift(record);
+  queueSaveTimerRecords();
+  res.json({ success: true, record });
+});
+
+app.delete('/api/timer-records/:id', (req, res) => {
+  const { id } = req.params;
+  const initialLength = timerRecords.length;
+  timerRecords = timerRecords.filter(r => r.id !== id);
+  if (timerRecords.length !== initialLength) {
+    queueSaveTimerRecords();
+    res.json({ success: true, deletedId: id });
+  } else {
+    res.status(404).json({ error: 'Record not found' });
+  }
+});
+
+app.delete('/api/timer-records', (req, res) => {
+  timerRecords = [];
+  queueSaveTimerRecords();
+  res.json({ success: true, cleared: true });
+});
+
+app.get('/api/timer-records/export', (req, res) => {
+  res.setHeader('Content-Type', 'application/json');
+  res.setHeader('Content-Disposition', 'attachment; filename="timer_records_database.json"');
+  res.send(JSON.stringify(timerRecords, null, 2));
+});
 
 // Allow cross-origin requests for uploads so the PDF app can fetch and update them
 app.use('/uploads', (req, res, next) => {
@@ -298,6 +407,10 @@ wss.on('connection', (ws) => {
         case 'delete': {
           const { id } = data;
           if (id) {
+            const el = boardState[id];
+            if (el && el.type === 'timer') {
+              archiveClosedTimer(el);
+            }
             delete boardState[id];
             queueSave();
             broadcast(ws, { type: 'delete', id });
@@ -308,6 +421,10 @@ wss.on('connection', (ws) => {
           const { ids } = data;
           if (Array.isArray(ids)) {
             ids.forEach(id => {
+              const el = boardState[id];
+              if (el && el.type === 'timer') {
+                archiveClosedTimer(el);
+              }
               delete boardState[id];
             });
             queueSave();
@@ -409,8 +526,12 @@ server.listen(PORT, '0.0.0.0', () => {
     const hostIP = validIPs.length > 0 ? validIPs[0] : (lanIPs.length > 0 ? lanIPs[0] : '0.0.0.0');
     
     const bonjour = new Bonjour();
-    bonjour.publish({ name: 'Flow Whiteboard', type: 'flowboard', port: PORT, host: hostIP });
-    console.log(`[*] mDNS Broadcaster active on ${hostIP}. Android app will detect this automatically on the network.`);
+    const serviceName = Number(PORT) === 3939 ? 'Flow Whiteboard' : `Flow Whiteboard (${PORT})`;
+    const srv = bonjour.publish({ name: serviceName, type: 'flowboard', port: Number(PORT), host: hostIP });
+    if (srv && typeof srv.on === 'function') {
+      srv.on('error', (e) => console.warn('[*] Bonjour service warning:', e.message));
+    }
+    console.log(`[*] mDNS Broadcaster active on ${hostIP} (${serviceName}). Android app will detect this automatically on the network.`);
   } catch (err) {
     console.error('Failed to start bonjour service:', err);
   }
