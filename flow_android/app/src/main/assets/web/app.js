@@ -615,6 +615,39 @@ function buildImageContent(node, el) {
   node.appendChild(img);
 }
 
+function getPdfViewerUrl(fileUrl) {
+  let serverIp = '';
+  if (window.AndroidBridge && window.AndroidBridge.getServerIp) {
+    try { serverIp = window.AndroidBridge.getServerIp(); } catch (e) {}
+  }
+  
+  const isLocalOrFile = location.protocol === 'file:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1' || !location.hostname;
+  
+  let pdfHost = 'localhost:4040';
+  if (!isLocalOrFile && location.hostname) {
+    pdfHost = `${location.hostname}:4040`;
+  } else if (serverIp) {
+    pdfHost = `${serverIp}:4040`;
+  }
+  
+  let noteHost = 'localhost:3939';
+  if (!isLocalOrFile && location.host) {
+    noteHost = location.host;
+  } else if (serverIp) {
+    noteHost = `${serverIp}:3939`;
+  }
+  
+  let fullUrl = fileUrl || '';
+  if (!fullUrl.startsWith('http://') && !fullUrl.startsWith('https://') && !fullUrl.startsWith('data:')) {
+    if (!fullUrl.startsWith('/')) fullUrl = '/' + fullUrl;
+    fullUrl = `http://${noteHost}${fullUrl}`;
+  }
+  
+  const sep = fullUrl.includes('?') ? '&' : '?';
+  const targetUrl = fullUrl.startsWith('http') ? `${fullUrl}${sep}v=${Date.now()}` : fullUrl;
+  return `http://${pdfHost}/web/viewer.html?file=${encodeURIComponent(targetUrl)}`;
+}
+
 function buildFileContent(node, el) {
   node.classList.add('file-element');
   const inner = document.createElement('div');
@@ -628,34 +661,71 @@ function buildFileContent(node, el) {
   name.className = 'file-name';
   name.textContent = el.fileName || 'Attachment';
   
+  const isPdf = (el.fileName || el.url || '').toLowerCase().endsWith('.pdf');
+
+  const openAction = (e) => {
+    if (e) {
+      e.stopPropagation();
+      e.preventDefault();
+    }
+    if (isPdf) {
+      if (window.AndroidBridge && window.AndroidBridge.openPdf) {
+        window.AndroidBridge.openPdf(el.url, el.fileName || 'Document.pdf');
+      } else {
+        window.open(getPdfViewerUrl(el.url), '_blank');
+      }
+    } else if (el.url) {
+      if (window.AndroidBridge && window.AndroidBridge.openFile) {
+        window.AndroidBridge.openFile(el.url, el.fileName || 'Attachment');
+      } else {
+        window.open(el.url, '_blank');
+      }
+    }
+  };
+
+  icon.style.cursor = 'pointer';
+  icon.addEventListener('click', openAction);
+  name.style.cursor = 'pointer';
+  name.addEventListener('click', openAction);
+
   const dl = document.createElement('a');
   dl.className = 'file-download';
-  dl.href = el.url ? `${el.url}?v=${Date.now()}` : '#';
+  dl.href = el.url ? (el.url.startsWith('http') ? `${el.url}?v=${Date.now()}` : el.url) : '#';
   dl.target = '_blank';
   dl.title = 'Open file';
   dl.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none"><path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>';
-  
-  // Prevent pointerdown from grabbing the board element so the native click works
   dl.addEventListener('pointerdown', e => e.stopPropagation());
+  dl.addEventListener('click', e => {
+    if (window.AndroidBridge && (window.AndroidBridge.openPdf || window.AndroidBridge.openFile)) {
+      openAction(e);
+    }
+  });
 
   inner.appendChild(icon);
   inner.appendChild(name);
 
-  if ((el.fileName || '').toLowerCase().endsWith('.pdf')) {
+  if (isPdf) {
     const annotateBtn = document.createElement('a');
     annotateBtn.className = 'file-download';
     annotateBtn.title = 'Annotate PDF (Official PDF.js)';
     annotateBtn.innerHTML = '<span style="font-size: 16px;">🖊️</span>';
     annotateBtn.target = '_blank';
-    const absoluteUrl = new URL(el.url, window.location.origin).href;
-    const cacheBusterUrl = `${absoluteUrl}?v=${Date.now()}`;
-    annotateBtn.href = `http://${window.location.hostname}:4040/web/viewer.html?file=${encodeURIComponent(cacheBusterUrl)}`;
+    annotateBtn.href = getPdfViewerUrl(el.url);
     annotateBtn.addEventListener('pointerdown', e => e.stopPropagation());
+    annotateBtn.addEventListener('click', e => {
+      if (window.AndroidBridge && window.AndroidBridge.openPdf) {
+        openAction(e);
+      }
+    });
     inner.appendChild(annotateBtn);
   }
 
   inner.appendChild(dl);
   node.appendChild(inner);
+
+  node.addEventListener('dblclick', e => {
+    openAction(e);
+  });
 }
 
 function buildLinkContent(node, el) {
@@ -1825,8 +1895,20 @@ function uploadAndPlaceFile(file, cx, cy) {
         placeImageAt(ev.target.result, cx, cy);
         showToast('✅ Image placed locally (Offline)');
       } else {
-        console.error(e);
-        showToast('❌ Upload failed (server offline)');
+        if (window.AndroidBridge && window.AndroidBridge.saveLocalFile) {
+          try {
+            const localUrl = window.AndroidBridge.saveLocalFile(file.name || 'Document.pdf', ev.target.result);
+            if (localUrl) {
+              placeFileAt(localUrl, file.name || 'Document', cx, cy);
+              showToast('✅ File saved locally (Offline)');
+              return;
+            }
+          } catch (err) {
+            console.error('saveLocalFile error:', err);
+          }
+        }
+        placeFileAt(ev.target.result, file.name || 'File', cx, cy);
+        showToast('✅ File placed locally (Offline)');
       }
     }
   };

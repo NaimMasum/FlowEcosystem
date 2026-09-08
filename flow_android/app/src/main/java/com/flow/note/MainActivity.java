@@ -2,6 +2,7 @@ package com.flow.note;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.app.Dialog;
 import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.SharedPreferences;
@@ -9,6 +10,7 @@ import android.net.Uri;
 import android.net.wifi.WifiManager;
 import android.os.Bundle;
 import android.text.InputType;
+import android.util.Base64;
 import android.util.Log;
 import android.webkit.JavascriptInterface;
 import android.webkit.ValueCallback;
@@ -39,6 +41,8 @@ import java.net.InetSocketAddress;
 import java.net.NetworkInterface;
 import java.net.Socket;
 import java.net.URL;
+import java.net.URLDecoder;
+import java.net.URLEncoder;
 import java.util.ArrayList;
 import java.util.Enumeration;
 import java.util.LinkedHashSet;
@@ -59,6 +63,8 @@ public class MainActivity extends Activity {
     private final static int FILECHOOSER_RESULTCODE = 1;
     private final static int INSTALL_PERMISSION_REQUEST_CODE = 1002;
     private boolean isOfflineMode = false;
+    private Dialog mPdfDialog = null;
+    private WebView mPdfWebView = null;
 
     public class WebAppInterface {
         @JavascriptInterface
@@ -117,6 +123,56 @@ public class MainActivity extends Activity {
                 }
             });
         }
+
+        @JavascriptInterface
+        public void openPdf(final String fileUrl, final String fileName) {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    showPdfViewerDialog(fileUrl, fileName);
+                }
+            });
+        }
+
+        @JavascriptInterface
+        public void openFile(final String fileUrl, final String fileName) {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    if (fileUrl != null && fileUrl.toLowerCase().endsWith(".pdf")) {
+                        showPdfViewerDialog(fileUrl, fileName);
+                    } else {
+                        openExternalFile(fileUrl, fileName);
+                    }
+                }
+            });
+        }
+
+        @JavascriptInterface
+        public String saveLocalFile(final String fileName, String base64Data) {
+            try {
+                File uploadsDir = new File(getFilesDir(), "uploads");
+                if (!uploadsDir.exists()) uploadsDir.mkdirs();
+
+                String safeName = System.currentTimeMillis() + "_" + (fileName != null ? fileName.replaceAll("[^a-zA-Z0-9._-]", "_") : "file");
+                File dest = new File(uploadsDir, safeName);
+
+                if (base64Data != null && base64Data.contains(",")) {
+                    base64Data = base64Data.substring(base64Data.indexOf(",") + 1);
+                }
+                if (base64Data != null) {
+                    byte[] bytes = Base64.decode(base64Data, Base64.DEFAULT);
+                    FileOutputStream fos = new FileOutputStream(dest);
+                    fos.write(bytes);
+                    fos.close();
+                    Log.d("FlowApp", "Saved local offline file: " + dest.getAbsolutePath());
+                    return "/uploads/" + safeName;
+                }
+            } catch (Exception e) {
+                Log.e("FlowApp", "Error saving local file", e);
+            }
+            return null;
+        }
     }
 
     @Override
@@ -159,78 +215,24 @@ public class MainActivity extends Activity {
         
         mWebView.setWebViewClient(new WebViewClient() {
             @Override
-            public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
-                String url = request.getUrl().toString();
-                String path = request.getUrl().getPath();
-                if (path == null) path = "";
-                
-                try {
-                    // 1. Intercept Flow Note uploads (saved locally in app files)
-                    if (path.contains("/uploads/")) {
-                        int uploadIdx = path.indexOf("/uploads/");
-                        String subPath = path.substring(uploadIdx);
-                        File localFile = new File(getFilesDir(), subPath);
-                        if (localFile.exists()) {
-                            String mime = "application/octet-stream";
-                            if (subPath.endsWith(".png")) mime = "image/png";
-                            else if (subPath.endsWith(".jpg") || subPath.endsWith(".jpeg")) mime = "image/jpeg";
-                            else if (subPath.endsWith(".pdf")) mime = "application/pdf";
-                            else if (subPath.endsWith(".svg")) mime = "image/svg+xml";
-                            WebResourceResponse response = new WebResourceResponse(mime, "UTF-8", new FileInputStream(localFile));
-                            java.util.Map<String, String> headers = new java.util.HashMap<>();
-                            headers.put("Access-Control-Allow-Origin", "*");
-                            headers.put("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-                            headers.put("Access-Control-Allow-Headers", "*");
-                            response.setResponseHeaders(headers);
-                            return response;
-                        }
-                    }
-                    
-                    // 2. Intercept Flow PDF Viewer (3940 / 4040)
-                    if (url.contains(":" + PDF_PORT)) {
-                        String assetPath = "pdf" + (path.equals("/") ? "/web/viewer.html" : path);
-                        InputStream is = getAssets().open(assetPath);
-                        
-                        String mime = "application/octet-stream";
-                        if (path.endsWith(".html")) mime = "text/html";
-                        else if (path.endsWith(".js") || path.endsWith(".mjs")) mime = "application/javascript";
-                        else if (path.endsWith(".css")) mime = "text/css";
-                        else if (path.endsWith(".png")) mime = "image/png";
-                        else if (path.endsWith(".json") || path.endsWith(".map")) mime = "application/json";
-                        
-                        WebResourceResponse response = new WebResourceResponse(mime, "UTF-8", is);
-                        java.util.Map<String, String> headers = new java.util.HashMap<>();
-                        headers.put("Access-Control-Allow-Origin", "*");
-                        headers.put("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-                        headers.put("Access-Control-Allow-Headers", "*");
-                        response.setResponseHeaders(headers);
-                        return response;
-                    }
-
-                    // 3. Fallback intercept for localhost:3939 / 127.0.0.1:3939 offline web assets
-                    if (url.contains("localhost:" + NOTE_PORT) || url.contains("127.0.0.1:" + NOTE_PORT)) {
-                        String cleanPath = path.equals("/") || path.isEmpty() ? "index.html" : (path.startsWith("/") ? path.substring(1) : path);
-                        InputStream is = getAssets().open("web/" + cleanPath);
-                        String mime = "application/octet-stream";
-                        if (cleanPath.endsWith(".html")) mime = "text/html";
-                        else if (cleanPath.endsWith(".js")) mime = "application/javascript";
-                        else if (cleanPath.endsWith(".css")) mime = "text/css";
-                        else if (cleanPath.endsWith(".png")) mime = "image/png";
-                        else if (cleanPath.endsWith(".svg")) mime = "image/svg+xml";
-                        else if (cleanPath.endsWith(".json")) mime = "application/json";
-
-                        WebResourceResponse response = new WebResourceResponse(mime, "UTF-8", is);
-                        java.util.Map<String, String> headers = new java.util.HashMap<>();
-                        headers.put("Access-Control-Allow-Origin", "*");
-                        headers.put("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-                        headers.put("Access-Control-Allow-Headers", "*");
-                        response.setResponseHeaders(headers);
-                        return response;
-                    }
-                } catch (Exception e) {
-                    Log.e("FlowApp", "Asset load error: " + e.getMessage());
+            public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
+                if (request != null && request.getUrl() != null) {
+                    return handleUrlNavigation(request.getUrl().toString());
                 }
-                
+                return false;
+            }
+
+            @Override
+            public boolean shouldOverrideUrlLoading(WebView view, String url) {
+                return handleUrlNavigation(url);
+            }
+
+            @Override
+            public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
+                if (request != null && request.getUrl() != null) {
+                    WebResourceResponse res = interceptAssetOrUpload(request.getUrl().toString(), request.getUrl().getPath());
+                    if (res != null) return res;
+                }
                 return super.shouldInterceptRequest(view, request);
             }
 
@@ -267,6 +269,411 @@ public class MainActivity extends Activity {
         scanNetwork();
     }
 
+    @Override
+    public void onBackPressed() {
+        if (mPdfDialog != null && mPdfDialog.isShowing()) {
+            if (mPdfWebView != null && mPdfWebView.canGoBack()) {
+                mPdfWebView.goBack();
+            } else {
+                mPdfDialog.dismiss();
+            }
+            return;
+        }
+
+        if (mWebView != null && mWebView.canGoBack()) {
+            mWebView.goBack();
+            return;
+        }
+
+        super.onBackPressed();
+    }
+
+    private boolean handleUrlNavigation(String url) {
+        if (url == null || url.isEmpty()) return false;
+
+        // 1. PDF Viewer or Annotator URLs
+        if (url.contains(":" + PDF_PORT) || url.contains("/web/viewer.html")) {
+            Uri uri = Uri.parse(url);
+            String fileParam = uri.getQueryParameter("file");
+            if (fileParam != null && !fileParam.isEmpty()) {
+                String fname = "Document.pdf";
+                try {
+                    fname = new File(Uri.parse(fileParam).getPath()).getName();
+                } catch (Exception ignored) {}
+                showPdfViewerDialog(fileParam, fname);
+            } else {
+                showPdfViewerDialog(url, "PDF Viewer");
+            }
+            return true;
+        }
+
+        // 2. Direct PDF document links
+        String lower = url.toLowerCase();
+        if (lower.endsWith(".pdf") || (url.contains("/uploads/") && lower.contains(".pdf"))) {
+            String fname = "Document.pdf";
+            try {
+                fname = new File(Uri.parse(url).getPath()).getName();
+            } catch (Exception ignored) {}
+            showPdfViewerDialog(url, fname);
+            return true;
+        }
+
+        // 3. Flow Whiteboard internal page navigations
+        if (url.contains(":" + NOTE_PORT) || url.startsWith("file:///android_asset/web/")) {
+            return false;
+        }
+
+        // 4. External websites (e.g. clicked link cards)
+        try {
+            Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(intent);
+            return true;
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    private int dpToPx(int dp) {
+        return (int) (dp * getResources().getDisplayMetrics().density + 0.5f);
+    }
+
+    private void showPdfViewerDialog(final String rawFileUrl, final String fileName) {
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    if (mPdfDialog != null && mPdfDialog.isShowing()) {
+                        mPdfDialog.dismiss();
+                    }
+
+                    final Dialog dialog = new Dialog(MainActivity.this, android.R.style.Theme_Black_NoTitleBar_Fullscreen);
+                    mPdfDialog = dialog;
+
+                    android.widget.LinearLayout root = new android.widget.LinearLayout(MainActivity.this);
+                    root.setOrientation(android.widget.LinearLayout.VERTICAL);
+                    root.setLayoutParams(new android.view.ViewGroup.LayoutParams(
+                            android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                            android.view.ViewGroup.LayoutParams.MATCH_PARENT));
+                    root.setBackgroundColor(0xFF1E1E1E);
+
+                    // Header bar
+                    android.widget.LinearLayout header = new android.widget.LinearLayout(MainActivity.this);
+                    header.setOrientation(android.widget.LinearLayout.HORIZONTAL);
+                    header.setLayoutParams(new android.widget.LinearLayout.LayoutParams(
+                            android.widget.LinearLayout.LayoutParams.MATCH_PARENT,
+                            dpToPx(50)));
+                    header.setBackgroundColor(0xFF2B2B2B);
+                    header.setGravity(android.view.Gravity.CENTER_VERTICAL);
+                    header.setPadding(dpToPx(10), 0, dpToPx(10), 0);
+
+                    // Back button
+                    android.widget.Button backBtn = new android.widget.Button(MainActivity.this);
+                    backBtn.setText("← Back");
+                    backBtn.setTextColor(0xFFFFFFFF);
+                    backBtn.setTextSize(14);
+                    backBtn.setBackgroundColor(0x00000000);
+                    backBtn.setOnClickListener(new android.view.View.OnClickListener() {
+                        @Override
+                        public void onClick(android.view.View v) {
+                            dialog.dismiss();
+                        }
+                    });
+                    header.addView(backBtn);
+
+                    // Title
+                    android.widget.TextView titleView = new android.widget.TextView(MainActivity.this);
+                    titleView.setText(fileName != null && !fileName.isEmpty() ? fileName : "PDF Document");
+                    titleView.setTextColor(0xFFE5E5E5);
+                    titleView.setTextSize(15);
+                    titleView.setSingleLine(true);
+                    titleView.setEllipsize(android.text.TextUtils.TruncateAt.END);
+                    android.widget.LinearLayout.LayoutParams titleParams = new android.widget.LinearLayout.LayoutParams(
+                            0, android.widget.LinearLayout.LayoutParams.WRAP_CONTENT, 1.0f);
+                    titleParams.setMargins(dpToPx(10), 0, dpToPx(10), 0);
+                    titleView.setLayoutParams(titleParams);
+                    header.addView(titleView);
+
+                    // External app button
+                    android.widget.Button extBtn = new android.widget.Button(MainActivity.this);
+                    extBtn.setText("Share / App ↗");
+                    extBtn.setTextColor(0xFF4A90E2);
+                    extBtn.setTextSize(13);
+                    extBtn.setBackgroundColor(0x00000000);
+                    extBtn.setOnClickListener(new android.view.View.OnClickListener() {
+                        @Override
+                        public void onClick(android.view.View v) {
+                            openPdfInExternalApp(rawFileUrl, fileName);
+                        }
+                    });
+                    header.addView(extBtn);
+
+                    root.addView(header);
+
+                    // PDF WebView
+                    final WebView pdfWv = new WebView(MainActivity.this);
+                    mPdfWebView = pdfWv;
+                    pdfWv.setLayoutParams(new android.widget.LinearLayout.LayoutParams(
+                            android.widget.LinearLayout.LayoutParams.MATCH_PARENT,
+                            0, 1.0f));
+
+                    WebSettings ws = pdfWv.getSettings();
+                    ws.setJavaScriptEnabled(true);
+                    ws.setDomStorageEnabled(true);
+                    ws.setDatabaseEnabled(true);
+                    ws.setAllowFileAccess(true);
+                    ws.setAllowFileAccessFromFileURLs(true);
+                    ws.setAllowUniversalAccessFromFileURLs(true);
+
+                    pdfWv.setWebViewClient(new WebViewClient() {
+                        @Override
+                        public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
+                            if (request != null && request.getUrl() != null) {
+                                WebResourceResponse res = interceptAssetOrUpload(request.getUrl().toString(), request.getUrl().getPath());
+                                if (res != null) return res;
+                            }
+                            return super.shouldInterceptRequest(view, request);
+                        }
+                    });
+
+                    root.addView(pdfWv);
+                    dialog.setContentView(root);
+
+                    dialog.setOnDismissListener(new DialogInterface.OnDismissListener() {
+                        @Override
+                        public void onDismiss(DialogInterface d) {
+                            if (mPdfWebView != null) {
+                                mPdfWebView.destroy();
+                                mPdfWebView = null;
+                            }
+                            mPdfDialog = null;
+                        }
+                    });
+
+                    String resolvedUrl = resolveFileUrlForViewer(rawFileUrl);
+                    String viewerUrl = "http://localhost:" + PDF_PORT + "/web/viewer.html?file=" + URLEncoder.encode(resolvedUrl, "UTF-8");
+                    Log.d("FlowApp", "Opening PDF viewer with URL: " + viewerUrl);
+                    pdfWv.loadUrl(viewerUrl);
+
+                    dialog.show();
+                } catch (Exception e) {
+                    Log.e("FlowApp", "Error showing PDF dialog", e);
+                    Toast.makeText(MainActivity.this, "Opening external PDF viewer...", Toast.LENGTH_SHORT).show();
+                    openPdfInExternalApp(rawFileUrl, fileName);
+                }
+            }
+        });
+    }
+
+    private String resolveFileUrlForViewer(String rawFileUrl) {
+        if (rawFileUrl == null || rawFileUrl.isEmpty()) return "";
+        if (rawFileUrl.startsWith("http://") || rawFileUrl.startsWith("https://")) {
+            return rawFileUrl;
+        }
+
+        String path = rawFileUrl;
+        if (path.startsWith("file:///android_asset/")) {
+            path = path.replace("file:///android_asset/", "");
+        }
+        if (!path.startsWith("/")) path = "/" + path;
+
+        // When offline or local, route via localhost:3939 so interceptAssetOrUpload intercepts it
+        String lastIp = getSharedPreferences("FlowPrefs", MODE_PRIVATE).getString("last_ip", "");
+        if (isOfflineMode || lastIp.isEmpty()) {
+            return "http://localhost:" + NOTE_PORT + path;
+        } else {
+            return "http://" + lastIp + ":" + NOTE_PORT + path;
+        }
+    }
+
+    private File findLocalUploadFile(String fileUrl) {
+        if (fileUrl == null || fileUrl.isEmpty()) return null;
+        try {
+            String cleanName = fileUrl;
+            if (cleanName.contains("?")) cleanName = cleanName.substring(0, cleanName.indexOf("?"));
+            if (cleanName.contains("/uploads/")) {
+                cleanName = cleanName.substring(cleanName.indexOf("/uploads/") + 9);
+            } else if (cleanName.contains("/")) {
+                cleanName = cleanName.substring(cleanName.lastIndexOf("/") + 1);
+            }
+            if (cleanName.startsWith("/")) cleanName = cleanName.substring(1);
+
+            File uploadsDir = new File(getFilesDir(), "uploads");
+            File f = new File(uploadsDir, cleanName);
+            if (f.exists()) return f;
+
+            try {
+                File decoded = new File(uploadsDir, URLDecoder.decode(cleanName, "UTF-8"));
+                if (decoded.exists()) return decoded;
+            } catch (Exception ignored) {}
+
+            File direct = new File(getFilesDir(), cleanName);
+            if (direct.exists()) return direct;
+
+            File cache = new File(getCacheDir(), cleanName);
+            if (cache.exists()) return cache;
+        } catch (Exception ignored) {}
+        return null;
+    }
+
+    private void openPdfInExternalApp(String fileUrl, String fileName) {
+        try {
+            File targetFile = findLocalUploadFile(fileUrl);
+            if (targetFile == null || !targetFile.exists()) {
+                Toast.makeText(this, "File is not stored locally on this device.", Toast.LENGTH_SHORT).show();
+                return;
+            }
+
+            Uri uri = Uri.parse("content://" + GenericFileProvider.AUTHORITY + "/" + targetFile.getName());
+            Intent intent = new Intent(Intent.ACTION_VIEW);
+            intent.setDataAndType(uri, "application/pdf");
+            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(Intent.createChooser(intent, "Open PDF with..."));
+        } catch (Exception e) {
+            Log.e("FlowApp", "Error opening external PDF", e);
+            Toast.makeText(this, "No external application found to open PDF.", Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    private void openExternalFile(String fileUrl, String fileName) {
+        try {
+            File targetFile = findLocalUploadFile(fileUrl);
+            if (targetFile != null && targetFile.exists()) {
+                String mime = "*/*";
+                String lower = targetFile.getName().toLowerCase();
+                if (lower.endsWith(".png")) mime = "image/png";
+                else if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) mime = "image/jpeg";
+                else if (lower.endsWith(".pdf")) mime = "application/pdf";
+
+                Uri uri = Uri.parse("content://" + GenericFileProvider.AUTHORITY + "/" + targetFile.getName());
+                Intent intent = new Intent(Intent.ACTION_VIEW);
+                intent.setDataAndType(uri, mime);
+                intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                startActivity(Intent.createChooser(intent, "Open file with..."));
+            } else if (fileUrl != null && (fileUrl.startsWith("http://") || fileUrl.startsWith("https://"))) {
+                Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(fileUrl));
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                startActivity(intent);
+            } else {
+                Toast.makeText(this, "File not available locally", Toast.LENGTH_SHORT).show();
+            }
+        } catch (Exception e) {
+            Log.e("FlowApp", "Error opening file", e);
+            Toast.makeText(this, "Could not open file: " + e.getMessage(), Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    private WebResourceResponse interceptAssetOrUpload(String url, String path) {
+        if (path == null) path = "";
+        try {
+            // 1. Intercept Flow Note uploads (saved locally in app files)
+            if (path.contains("/uploads/")) {
+                int uploadIdx = path.indexOf("/uploads/");
+                String subPath = path.substring(uploadIdx);
+                if (subPath.startsWith("/")) subPath = subPath.substring(1);
+
+                File localFile = new File(getFilesDir(), subPath);
+                if (!localFile.exists()) {
+                    try {
+                        localFile = new File(getFilesDir(), URLDecoder.decode(subPath, "UTF-8"));
+                    } catch (Exception ignored) {}
+                }
+                if (!localFile.exists()) {
+                    String fname = new File(subPath).getName();
+                    File uFile = new File(new File(getFilesDir(), "uploads"), fname);
+                    if (uFile.exists()) localFile = uFile;
+                }
+
+                if (localFile.exists()) {
+                    String mime = "application/octet-stream";
+                    String encoding = null; // Binary by default
+                    String lower = subPath.toLowerCase();
+                    if (lower.endsWith(".png")) mime = "image/png";
+                    else if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) mime = "image/jpeg";
+                    else if (lower.endsWith(".pdf")) mime = "application/pdf";
+                    else if (lower.endsWith(".svg")) { mime = "image/svg+xml"; encoding = "UTF-8"; }
+
+                    WebResourceResponse response = new WebResourceResponse(mime, encoding, new FileInputStream(localFile));
+                    java.util.Map<String, String> headers = new java.util.HashMap<>();
+                    headers.put("Access-Control-Allow-Origin", "*");
+                    headers.put("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS");
+                    headers.put("Access-Control-Allow-Headers", "*");
+                    headers.put("Accept-Ranges", "bytes");
+                    response.setResponseHeaders(headers);
+                    return response;
+                }
+            }
+
+            // 2. Intercept Flow PDF Viewer (4040)
+            if (url.contains(":" + PDF_PORT) || path.startsWith("/web/") || path.startsWith("/build/") || url.contains("/web/viewer.html")) {
+                String assetPath = "pdf" + (path.equals("/") || path.isEmpty() ? "/web/viewer.html" : (path.startsWith("/") ? path : "/" + path));
+                InputStream is = null;
+                try {
+                    is = getAssets().open(assetPath);
+                } catch (Exception notFound) {
+                    try {
+                        is = getAssets().open("pdf/web" + (path.startsWith("/") ? path : "/" + path));
+                    } catch (Exception ignored) {}
+                }
+
+                if (is != null) {
+                    String mime = "application/octet-stream";
+                    String encoding = null;
+                    String lower = path.toLowerCase();
+                    if (lower.endsWith(".html")) { mime = "text/html"; encoding = "UTF-8"; }
+                    else if (lower.endsWith(".js") || lower.endsWith(".mjs")) { mime = "application/javascript"; encoding = "UTF-8"; }
+                    else if (lower.endsWith(".css")) { mime = "text/css"; encoding = "UTF-8"; }
+                    else if (lower.endsWith(".json") || lower.endsWith(".map")) { mime = "application/json"; encoding = "UTF-8"; }
+                    else if (lower.endsWith(".svg")) { mime = "image/svg+xml"; encoding = "UTF-8"; }
+                    else if (lower.endsWith(".png")) { mime = "image/png"; }
+                    else if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) { mime = "image/jpeg"; }
+                    else if (lower.endsWith(".gif")) { mime = "image/gif"; }
+                    else if (lower.endsWith(".wasm")) { mime = "application/wasm"; }
+                    else if (lower.endsWith(".woff")) { mime = "font/woff"; }
+                    else if (lower.endsWith(".woff2")) { mime = "font/woff2"; }
+                    else if (lower.endsWith(".ttf")) { mime = "font/ttf"; }
+                    else if (lower.endsWith(".properties")) { mime = "text/plain"; encoding = "UTF-8"; }
+
+                    WebResourceResponse response = new WebResourceResponse(mime, encoding, is);
+                    java.util.Map<String, String> headers = new java.util.HashMap<>();
+                    headers.put("Access-Control-Allow-Origin", "*");
+                    headers.put("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+                    headers.put("Access-Control-Allow-Headers", "*");
+                    response.setResponseHeaders(headers);
+                    return response;
+                }
+            }
+
+            // 3. Fallback intercept for localhost:3939 / 127.0.0.1:3939 offline web assets
+            if (url.contains("localhost:" + NOTE_PORT) || url.contains("127.0.0.1:" + NOTE_PORT)) {
+                String cleanPath = path.equals("/") || path.isEmpty() ? "index.html" : (path.startsWith("/") ? path.substring(1) : path);
+                InputStream is = getAssets().open("web/" + cleanPath);
+                String mime = "application/octet-stream";
+                String encoding = null;
+                String lower = cleanPath.toLowerCase();
+                if (lower.endsWith(".html")) { mime = "text/html"; encoding = "UTF-8"; }
+                else if (lower.endsWith(".js")) { mime = "application/javascript"; encoding = "UTF-8"; }
+                else if (lower.endsWith(".css")) { mime = "text/css"; encoding = "UTF-8"; }
+                else if (lower.endsWith(".json")) { mime = "application/json"; encoding = "UTF-8"; }
+                else if (lower.endsWith(".svg")) { mime = "image/svg+xml"; encoding = "UTF-8"; }
+                else if (lower.endsWith(".png")) { mime = "image/png"; }
+
+                WebResourceResponse response = new WebResourceResponse(mime, encoding, is);
+                java.util.Map<String, String> headers = new java.util.HashMap<>();
+                headers.put("Access-Control-Allow-Origin", "*");
+                headers.put("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+                headers.put("Access-Control-Allow-Headers", "*");
+                response.setResponseHeaders(headers);
+                return response;
+            }
+        } catch (Exception e) {
+            Log.e("FlowApp", "Asset load error: " + e.getMessage());
+        }
+        return null;
+    }
+
     private void syncOfflineFiles(final String ip) {
         new Thread(new Runnable() {
             @Override
@@ -293,20 +700,27 @@ public class MainActivity extends Activity {
                     JSONArray files = new JSONArray(sb.toString());
                     for (int i = 0; i < files.length(); i++) {
                         String filename = files.getString(i);
-                        File localFile = new File(uploadsDir, filename);
-                        if (!localFile.exists()) {
-                            URL fileUrl = new URL("http://" + ip + ":" + NOTE_PORT + "/uploads/" + filename);
-                            HttpURLConnection fileConn = (HttpURLConnection) fileUrl.openConnection();
-                            InputStream fileIs = fileConn.getInputStream();
-                            FileOutputStream fos = new FileOutputStream(localFile);
-                            byte[] dlBuffer = new byte[4096];
-                            int dlRead;
-                            while ((dlRead = fileIs.read(dlBuffer)) != -1) {
-                                fos.write(dlBuffer, 0, dlRead);
+                        try {
+                            File localFile = new File(uploadsDir, filename);
+                            if (!localFile.exists()) {
+                                String encodedFilename = URLEncoder.encode(filename, "UTF-8").replace("+", "%20");
+                                URL fileUrl = new URL("http://" + ip + ":" + NOTE_PORT + "/uploads/" + encodedFilename);
+                                HttpURLConnection fileConn = (HttpURLConnection) fileUrl.openConnection();
+                                fileConn.setConnectTimeout(4000);
+                                fileConn.setReadTimeout(10000);
+                                InputStream fileIs = fileConn.getInputStream();
+                                FileOutputStream fos = new FileOutputStream(localFile);
+                                byte[] dlBuffer = new byte[4096];
+                                int dlRead;
+                                while ((dlRead = fileIs.read(dlBuffer)) != -1) {
+                                    fos.write(dlBuffer, 0, dlRead);
+                                }
+                                fos.close();
+                                fileIs.close();
+                                Log.d("FlowApp", "Downloaded offline file: " + filename);
                             }
-                            fos.close();
-                            fileIs.close();
-                            Log.d("FlowApp", "Downloaded offline file: " + filename);
+                        } catch (Exception fileEx) {
+                            Log.e("FlowApp", "Failed to download offline file: " + filename, fileEx);
                         }
                     }
                     
@@ -849,15 +1263,6 @@ public class MainActivity extends Activity {
                     Toast.makeText(this, "Install permission was not granted.", Toast.LENGTH_SHORT).show();
                 }
             }
-        }
-    }
-
-    @Override
-    public void onBackPressed() {
-        if (mWebView != null && mWebView.canGoBack()) {
-            mWebView.goBack();
-        } else {
-            super.onBackPressed();
         }
     }
 }
