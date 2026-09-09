@@ -65,6 +65,8 @@ public class MainActivity extends Activity {
     private boolean isOfflineMode = false;
     private Dialog mPdfDialog = null;
     private WebView mPdfWebView = null;
+    private java.util.concurrent.ScheduledExecutorService mFileSyncScheduler = null;
+    private final long FILE_SYNC_INTERVAL_SEC = 50;
 
     public class WebAppInterface {
         @JavascriptInterface
@@ -267,6 +269,7 @@ public class MainActivity extends Activity {
         });
         
         scanNetwork();
+        startPeriodicFileSync();
     }
 
     @Override
@@ -674,67 +677,161 @@ public class MainActivity extends Activity {
         return null;
     }
 
-    private void syncOfflineFiles(final String ip) {
-        new Thread(new Runnable() {
+    private synchronized void startPeriodicFileSync() {
+        if (mFileSyncScheduler != null && !mFileSyncScheduler.isShutdown()) {
+            return;
+        }
+        mFileSyncScheduler = Executors.newSingleThreadScheduledExecutor();
+        // Periodically sync/update files from server every 50 seconds
+        mFileSyncScheduler.scheduleWithFixedDelay(new Runnable() {
             @Override
             public void run() {
                 try {
-                    // Delay offline file syncing slightly to prioritize WebSocket connection and board rendering
-                    Thread.sleep(4000);
-                    File uploadsDir = new File(getFilesDir(), "uploads");
-                    if (!uploadsDir.exists()) uploadsDir.mkdirs();
-
-                    URL url = new URL("http://" + ip + ":" + NOTE_PORT + "/api/files");
-                    HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-                    conn.setConnectTimeout(3000);
-                    InputStream is = conn.getInputStream();
-                    
-                    byte[] buffer = new byte[1024];
-                    StringBuilder sb = new StringBuilder();
-                    int read;
-                    while ((read = is.read(buffer)) != -1) {
-                        sb.append(new String(buffer, 0, read));
+                    String currentIp = getSharedPreferences("FlowPrefs", MODE_PRIVATE).getString("last_ip", "");
+                    if (!currentIp.isEmpty() && !isOfflineMode) {
+                        syncOfflineFilesInternal(currentIp, false);
                     }
-                    is.close();
-                    
-                    JSONArray files = new JSONArray(sb.toString());
-                    for (int i = 0; i < files.length(); i++) {
-                        String filename = files.getString(i);
-                        try {
-                            File localFile = new File(uploadsDir, filename);
-                            if (!localFile.exists()) {
-                                String encodedFilename = URLEncoder.encode(filename, "UTF-8").replace("+", "%20");
-                                URL fileUrl = new URL("http://" + ip + ":" + NOTE_PORT + "/uploads/" + encodedFilename);
-                                HttpURLConnection fileConn = (HttpURLConnection) fileUrl.openConnection();
-                                fileConn.setConnectTimeout(4000);
-                                fileConn.setReadTimeout(10000);
-                                InputStream fileIs = fileConn.getInputStream();
-                                FileOutputStream fos = new FileOutputStream(localFile);
-                                byte[] dlBuffer = new byte[4096];
-                                int dlRead;
-                                while ((dlRead = fileIs.read(dlBuffer)) != -1) {
-                                    fos.write(dlBuffer, 0, dlRead);
-                                }
-                                fos.close();
-                                fileIs.close();
-                                Log.d("FlowApp", "Downloaded offline file: " + filename);
-                            }
-                        } catch (Exception fileEx) {
-                            Log.e("FlowApp", "Failed to download offline file: " + filename, fileEx);
-                        }
-                    }
-                    
-                    runOnUiThread(new Runnable() {
-                        @Override
-                        public void run() {
-                            Toast.makeText(MainActivity.this, "Offline Sync Complete", Toast.LENGTH_SHORT).show();
-                        }
-                    });
                 } catch (Exception e) {
-                    Log.e("FlowApp", "Sync error", e);
+                    Log.e("FlowApp", "Periodic file sync error", e);
                 }
             }
+        }, 3, FILE_SYNC_INTERVAL_SEC, TimeUnit.SECONDS);
+    }
+
+    private void syncOfflineFiles(final String ip) {
+        startPeriodicFileSync();
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                syncOfflineFilesInternal(ip, true);
+            }
         }).start();
+    }
+
+    private void syncOfflineFilesInternal(final String ip, final boolean isInitial) {
+        if (ip == null || ip.isEmpty() || isOfflineMode) return;
+        try {
+            if (isInitial) {
+                // Delay slightly on initial connection to prioritize board loading
+                Thread.sleep(3000);
+            }
+
+            File uploadsDir = new File(getFilesDir(), "uploads");
+            if (!uploadsDir.exists()) uploadsDir.mkdirs();
+
+            URL url = new URL("http://" + ip + ":" + NOTE_PORT + "/api/files");
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            conn.setConnectTimeout(4000);
+            conn.setReadTimeout(10000);
+            if (conn.getResponseCode() != 200) {
+                conn.disconnect();
+                return;
+            }
+
+            InputStream is = conn.getInputStream();
+            byte[] buffer = new byte[1024];
+            StringBuilder sb = new StringBuilder();
+            int read;
+            while ((read = is.read(buffer)) != -1) {
+                sb.append(new String(buffer, 0, read));
+            }
+            is.close();
+            conn.disconnect();
+
+            JSONArray files = new JSONArray(sb.toString());
+            int changedCount = 0;
+            int newCount = 0;
+
+            for (int i = 0; i < files.length(); i++) {
+                String filename = null;
+                long serverMtime = 0;
+                long serverSize = 0;
+
+                Object item = files.get(i);
+                if (item instanceof JSONObject) {
+                    JSONObject obj = (JSONObject) item;
+                    filename = obj.optString("name", "");
+                    serverMtime = obj.optLong("mtime", 0);
+                    serverSize = obj.optLong("size", 0);
+                } else if (item instanceof String) {
+                    filename = (String) item;
+                }
+
+                if (filename == null || filename.isEmpty()) continue;
+
+                try {
+                    File localFile = new File(uploadsDir, filename);
+                    boolean isNew = !localFile.exists();
+                    boolean isChanged = false;
+
+                    if (isNew) {
+                        isChanged = true;
+                    } else {
+                        // Check if file on server was modified
+                        if (serverMtime > 0 && Math.abs(localFile.lastModified() - serverMtime) > 1000) {
+                            isChanged = true;
+                        } else if (serverSize > 0 && localFile.length() != serverSize) {
+                            isChanged = true;
+                        }
+                    }
+
+                    if (isChanged) {
+                        String encodedFilename = URLEncoder.encode(filename, "UTF-8").replace("+", "%20");
+                        URL fileUrl = new URL("http://" + ip + ":" + NOTE_PORT + "/uploads/" + encodedFilename);
+                        HttpURLConnection fileConn = (HttpURLConnection) fileUrl.openConnection();
+                        fileConn.setConnectTimeout(4000);
+                        fileConn.setReadTimeout(15000);
+                        if (fileConn.getResponseCode() == 200) {
+                            InputStream fileIs = fileConn.getInputStream();
+                            File tempFile = new File(uploadsDir, filename + ".part");
+                            FileOutputStream fos = new FileOutputStream(tempFile);
+                            byte[] dlBuffer = new byte[8192];
+                            int dlRead;
+                            while ((dlRead = fileIs.read(dlBuffer)) != -1) {
+                                fos.write(dlBuffer, 0, dlRead);
+                            }
+                            fos.close();
+                            fileIs.close();
+
+                            // Atomic replace
+                            if (localFile.exists()) localFile.delete();
+                            tempFile.renameTo(localFile);
+
+                            if (serverMtime > 0) {
+                                localFile.setLastModified(serverMtime);
+                            }
+
+                            if (isNew) newCount++;
+                            else changedCount++;
+
+                            Log.d("FlowApp", (isNew ? "Downloaded new" : "Updated changed") + " file: " + filename);
+                        }
+                        fileConn.disconnect();
+                    }
+                } catch (Exception fileEx) {
+                    Log.e("FlowApp", "Failed to sync file: " + filename, fileEx);
+                }
+            }
+
+            final int totalUpdated = newCount + changedCount;
+            if (totalUpdated > 0) {
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        Toast.makeText(MainActivity.this, "Synced " + totalUpdated + " updated file" + (totalUpdated > 1 ? "s" : ""), Toast.LENGTH_SHORT).show();
+                    }
+                });
+            } else if (isInitial) {
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        Toast.makeText(MainActivity.this, "Files are up to date", Toast.LENGTH_SHORT).show();
+                    }
+                });
+            }
+        } catch (Exception e) {
+            Log.e("FlowApp", "Offline file sync error", e);
+        }
     }
 
     private void loadApp(String ip) {
@@ -1264,5 +1361,14 @@ public class MainActivity extends Activity {
                 }
             }
         }
+    }
+
+    @Override
+    protected void onDestroy() {
+        if (mFileSyncScheduler != null) {
+            mFileSyncScheduler.shutdownNow();
+            mFileSyncScheduler = null;
+        }
+        super.onDestroy();
     }
 }

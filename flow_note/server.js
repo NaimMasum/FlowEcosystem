@@ -231,7 +231,20 @@ app.use('/uploads', express.static(UPLOADS_DIR));
 
 app.get('/api/files', (req, res) => {
   try {
-    const files = fs.readdirSync(UPLOADS_DIR);
+    if (!fs.existsSync(UPLOADS_DIR)) return res.json([]);
+    const entries = fs.readdirSync(UPLOADS_DIR);
+    const files = entries.map(name => {
+      try {
+        const stat = fs.statSync(path.join(UPLOADS_DIR, name));
+        return {
+          name,
+          size: stat.size,
+          mtime: Math.floor(stat.mtimeMs)
+        };
+      } catch (_) {
+        return { name, size: 0, mtime: 0 };
+      }
+    });
     res.json(files);
   } catch (err) {
     console.error('Failed to list files:', err);
