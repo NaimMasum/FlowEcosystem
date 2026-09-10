@@ -20,6 +20,9 @@ import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import android.webkit.PermissionRequest;
+import android.Manifest;
+import android.content.pm.PackageManager;
 import android.app.ProgressDialog;
 import android.content.pm.PackageInfo;
 import android.os.Build;
@@ -56,17 +59,21 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 public class MainActivity extends Activity {
     private WebView mWebView;
-    private final int NOTE_PORT = 3939;
+    private final int[] NOTE_PORTS = new int[]{ 3941, 3939 };
+    private int mServerPort = 3941;
     private final int PDF_PORT = 4040;
     private AtomicBoolean found = new AtomicBoolean(false);
     private ValueCallback<Uri[]> mUploadMessage;
     private final static int FILECHOOSER_RESULTCODE = 1;
     private final static int INSTALL_PERMISSION_REQUEST_CODE = 1002;
+    private final static int AUDIO_PERMISSION_REQUEST_CODE = 1003;
+    private PermissionRequest mPendingAudioPermissionRequest = null;
     private boolean isOfflineMode = false;
     private Dialog mPdfDialog = null;
     private WebView mPdfWebView = null;
     private java.util.concurrent.ScheduledExecutorService mFileSyncScheduler = null;
     private final long FILE_SYNC_INTERVAL_SEC = 50;
+    private AlertDialog mUpdateDialog = null;
 
     public class WebAppInterface {
         @JavascriptInterface
@@ -180,6 +187,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        mServerPort = getSharedPreferences("FlowPrefs", MODE_PRIVATE).getInt("last_port", 3941);
         
         mWebView = new WebView(this);
         setContentView(mWebView);
@@ -191,10 +199,49 @@ public class MainActivity extends Activity {
         webSettings.setAllowFileAccess(true);
         webSettings.setAllowFileAccessFromFileURLs(true);
         webSettings.setAllowUniversalAccessFromFileURLs(true);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR1) {
+            webSettings.setMediaPlaybackRequiresUserGesture(false);
+        }
         
         mWebView.addJavascriptInterface(new WebAppInterface(), "AndroidBridge");
 
         mWebView.setWebChromeClient(new WebChromeClient() {
+            @Override
+            public void onPermissionRequest(final PermissionRequest request) {
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                            boolean needsAudio = false;
+                            for (String res : request.getResources()) {
+                                if (PermissionRequest.RESOURCE_AUDIO_CAPTURE.equals(res)) {
+                                    needsAudio = true;
+                                    break;
+                                }
+                            }
+                            if (needsAudio) {
+                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M &&
+                                        checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+                                    mPendingAudioPermissionRequest = request;
+                                    requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, AUDIO_PERMISSION_REQUEST_CODE);
+                                } else {
+                                    request.grant(request.getResources());
+                                }
+                            } else {
+                                request.grant(request.getResources());
+                            }
+                        }
+                    }
+                });
+            }
+
+            @Override
+            public void onPermissionRequestCanceled(PermissionRequest request) {
+                if (mPendingAudioPermissionRequest == request) {
+                    mPendingAudioPermissionRequest = null;
+                }
+            }
+
             @Override
             public boolean onShowFileChooser(WebView webView, ValueCallback<Uri[]> filePathCallback, FileChooserParams fileChooserParams) {
                 if (mUploadMessage != null) {
@@ -240,7 +287,7 @@ public class MainActivity extends Activity {
 
             @Override
             public void onReceivedError(WebView view, int errorCode, String description, String failingUrl) {
-                if (failingUrl != null && failingUrl.contains(":" + NOTE_PORT) && !failingUrl.contains("localhost") && !failingUrl.contains("127.0.0.1") && !isOfflineMode) {
+                if (failingUrl != null && isNoteUrl(failingUrl) && !failingUrl.contains("localhost") && !failingUrl.contains("127.0.0.1") && !isOfflineMode) {
                     Log.w("FlowApp", "Server load failed, falling back to local offline assets: " + description);
                     runOnUiThread(new Runnable() {
                         @Override
@@ -255,7 +302,7 @@ public class MainActivity extends Activity {
             public void onReceivedError(WebView view, WebResourceRequest request, android.webkit.WebResourceError error) {
                 if (request != null && request.isForMainFrame()) {
                     String failingUrl = request.getUrl() != null ? request.getUrl().toString() : "";
-                    if (failingUrl.contains(":" + NOTE_PORT) && !failingUrl.contains("localhost") && !failingUrl.contains("127.0.0.1") && !isOfflineMode) {
+                    if (isNoteUrl(failingUrl) && !failingUrl.contains("localhost") && !failingUrl.contains("127.0.0.1") && !isOfflineMode) {
                         Log.w("FlowApp", "Main frame server load failed, falling back to local offline assets");
                         runOnUiThread(new Runnable() {
                             @Override
@@ -291,6 +338,14 @@ public class MainActivity extends Activity {
         super.onBackPressed();
     }
 
+    private boolean isNoteUrl(String url) {
+        if (url == null) return false;
+        for (int p : NOTE_PORTS) {
+            if (url.contains(":" + p)) return true;
+        }
+        return false;
+    }
+
     private boolean handleUrlNavigation(String url) {
         if (url == null || url.isEmpty()) return false;
 
@@ -322,7 +377,7 @@ public class MainActivity extends Activity {
         }
 
         // 3. Flow Whiteboard internal page navigations
-        if (url.contains(":" + NOTE_PORT) || url.startsWith("file:///android_asset/web/")) {
+        if (isNoteUrl(url) || url.startsWith("file:///android_asset/web/")) {
             return false;
         }
 
@@ -483,9 +538,9 @@ public class MainActivity extends Activity {
         // When offline or local, route via localhost:3939 so interceptAssetOrUpload intercepts it
         String lastIp = getSharedPreferences("FlowPrefs", MODE_PRIVATE).getString("last_ip", "");
         if (isOfflineMode || lastIp.isEmpty()) {
-            return "http://localhost:" + NOTE_PORT + path;
+            return "http://localhost:" + mServerPort + path;
         } else {
-            return "http://" + lastIp + ":" + NOTE_PORT + path;
+            return "http://" + lastIp + ":" + mServerPort + path;
         }
     }
 
@@ -597,6 +652,11 @@ public class MainActivity extends Activity {
                     else if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) mime = "image/jpeg";
                     else if (lower.endsWith(".pdf")) mime = "application/pdf";
                     else if (lower.endsWith(".svg")) { mime = "image/svg+xml"; encoding = "UTF-8"; }
+                    else if (lower.endsWith(".webm")) mime = "audio/webm";
+                    else if (lower.endsWith(".mp3")) mime = "audio/mpeg";
+                    else if (lower.endsWith(".ogg")) mime = "audio/ogg";
+                    else if (lower.endsWith(".wav")) mime = "audio/wav";
+                    else if (lower.endsWith(".m4a")) mime = "audio/mp4";
 
                     WebResourceResponse response = new WebResourceResponse(mime, encoding, new FileInputStream(localFile));
                     java.util.Map<String, String> headers = new java.util.HashMap<>();
@@ -649,8 +709,15 @@ public class MainActivity extends Activity {
                 }
             }
 
-            // 3. Fallback intercept for localhost:3939 / 127.0.0.1:3939 offline web assets
-            if (url.contains("localhost:" + NOTE_PORT) || url.contains("127.0.0.1:" + NOTE_PORT)) {
+            // 3. Fallback intercept for localhost / 127.0.0.1 offline web assets
+            boolean isLocalhostNote = false;
+            for (int p : NOTE_PORTS) {
+                if (url.contains("localhost:" + p) || url.contains("127.0.0.1:" + p)) {
+                    isLocalhostNote = true;
+                    break;
+                }
+            }
+            if (isLocalhostNote) {
                 String cleanPath = path.equals("/") || path.isEmpty() ? "index.html" : (path.startsWith("/") ? path.substring(1) : path);
                 InputStream is = getAssets().open("web/" + cleanPath);
                 String mime = "application/octet-stream";
@@ -682,7 +749,7 @@ public class MainActivity extends Activity {
             return;
         }
         mFileSyncScheduler = Executors.newSingleThreadScheduledExecutor();
-        // Periodically sync/update files from server every 50 seconds
+        // Periodically sync/update files and check for app updates every 50 seconds
         mFileSyncScheduler.scheduleWithFixedDelay(new Runnable() {
             @Override
             public void run() {
@@ -690,6 +757,7 @@ public class MainActivity extends Activity {
                     String currentIp = getSharedPreferences("FlowPrefs", MODE_PRIVATE).getString("last_ip", "");
                     if (!currentIp.isEmpty() && !isOfflineMode) {
                         syncOfflineFilesInternal(currentIp, false);
+                        checkAppUpdate(currentIp, false);
                     }
                 } catch (Exception e) {
                     Log.e("FlowApp", "Periodic file sync error", e);
@@ -719,7 +787,7 @@ public class MainActivity extends Activity {
             File uploadsDir = new File(getFilesDir(), "uploads");
             if (!uploadsDir.exists()) uploadsDir.mkdirs();
 
-            URL url = new URL("http://" + ip + ":" + NOTE_PORT + "/api/files");
+            URL url = new URL("http://" + ip + ":" + mServerPort + "/api/files");
             HttpURLConnection conn = (HttpURLConnection) url.openConnection();
             conn.setConnectTimeout(4000);
             conn.setReadTimeout(10000);
@@ -777,7 +845,7 @@ public class MainActivity extends Activity {
 
                     if (isChanged) {
                         String encodedFilename = URLEncoder.encode(filename, "UTF-8").replace("+", "%20");
-                        URL fileUrl = new URL("http://" + ip + ":" + NOTE_PORT + "/uploads/" + encodedFilename);
+                        URL fileUrl = new URL("http://" + ip + ":" + mServerPort + "/uploads/" + encodedFilename);
                         HttpURLConnection fileConn = (HttpURLConnection) fileUrl.openConnection();
                         fileConn.setConnectTimeout(4000);
                         fileConn.setReadTimeout(15000);
@@ -837,7 +905,7 @@ public class MainActivity extends Activity {
     private void loadApp(String ip) {
         if (ip != null && !ip.isEmpty()) {
             isOfflineMode = false;
-            mWebView.loadUrl("http://" + ip + ":" + NOTE_PORT);
+            mWebView.loadUrl("http://" + ip + ":" + mServerPort);
         } else {
             isOfflineMode = true;
             mWebView.loadUrl("file:///android_asset/web/index.html");
@@ -975,24 +1043,31 @@ public class MainActivity extends Activity {
 
     private void checkAndConnect(final String ip, final String successMsg, int timeoutMs) {
         if (found.get()) return;
-        try {
-            Socket socket = new Socket();
-            socket.connect(new InetSocketAddress(ip, NOTE_PORT), timeoutMs);
-            socket.close();
+        for (final int port : NOTE_PORTS) {
+            try {
+                Socket socket = new Socket();
+                socket.connect(new InetSocketAddress(ip, port), timeoutMs);
+                socket.close();
 
-            if (found.compareAndSet(false, true)) {
-                getSharedPreferences("FlowPrefs", MODE_PRIVATE).edit().putString("last_ip", ip).apply();
-                runOnUiThread(new Runnable() {
-                    @Override
-                    public void run() {
-                        Toast.makeText(MainActivity.this, successMsg, Toast.LENGTH_SHORT).show();
-                        loadApp(ip);
-                        checkAppUpdate(ip, false);
-                        syncOfflineFiles(ip);
-                    }
-                });
-            }
-        } catch (Exception ignored) {}
+                if (found.compareAndSet(false, true)) {
+                    mServerPort = port;
+                    getSharedPreferences("FlowPrefs", MODE_PRIVATE).edit()
+                            .putString("last_ip", ip)
+                            .putInt("last_port", port)
+                            .apply();
+                    runOnUiThread(new Runnable() {
+                        @Override
+                        public void run() {
+                            Toast.makeText(MainActivity.this, successMsg, Toast.LENGTH_SHORT).show();
+                            loadApp(ip);
+                            checkAppUpdate(ip, false);
+                            syncOfflineFiles(ip);
+                        }
+                    });
+                    return;
+                }
+            } catch (Exception ignored) {}
+        }
     }
 
     private void promptManualIp() {
@@ -1090,27 +1165,35 @@ public class MainActivity extends Activity {
         new Thread(new Runnable() {
             @Override
             public void run() {
-                boolean reachable = false;
-                try {
-                    Socket socket = new Socket();
-                    socket.connect(new InetSocketAddress(ip, NOTE_PORT), 1500);
-                    socket.close();
-                    reachable = true;
-                } catch (Exception ignored) {}
+                int reachablePort = -1;
+                for (int port : NOTE_PORTS) {
+                    try {
+                        Socket socket = new Socket();
+                        socket.connect(new InetSocketAddress(ip, port), 1500);
+                        socket.close();
+                        reachablePort = port;
+                        break;
+                    } catch (Exception ignored) {}
+                }
 
-                final boolean success = reachable;
+                final int finalPort = reachablePort;
+                final boolean success = (finalPort != -1);
                 runOnUiThread(new Runnable() {
                     @Override
                     public void run() {
                         if (success) {
                             found.set(true);
-                            getSharedPreferences("FlowPrefs", MODE_PRIVATE).edit().putString("last_ip", ip).apply();
-                            Toast.makeText(MainActivity.this, "Connected to " + ip + "!", Toast.LENGTH_SHORT).show();
+                            mServerPort = finalPort;
+                            getSharedPreferences("FlowPrefs", MODE_PRIVATE).edit()
+                                    .putString("last_ip", ip)
+                                    .putInt("last_port", finalPort)
+                                    .apply();
+                            Toast.makeText(MainActivity.this, "Connected to " + ip + ":" + finalPort + "!", Toast.LENGTH_SHORT).show();
                             loadApp(ip);
                             checkAppUpdate(ip, false);
                             syncOfflineFiles(ip);
                         } else {
-                            Toast.makeText(MainActivity.this, "Could not reach " + ip + ":" + NOTE_PORT + ". Make sure PC server is running!", Toast.LENGTH_LONG).show();
+                            Toast.makeText(MainActivity.this, "Could not reach " + ip + ". Make sure PC server is running!", Toast.LENGTH_LONG).show();
                             promptManualIp();
                         }
                     }
@@ -1131,7 +1214,7 @@ public class MainActivity extends Activity {
             @Override
             public void run() {
                 try {
-                    URL url = new URL("http://" + ip + ":" + NOTE_PORT + "/api/app-version");
+                    URL url = new URL("http://" + ip + ":" + mServerPort + "/api/app-version");
                     HttpURLConnection conn = (HttpURLConnection) url.openConnection();
                     conn.setConnectTimeout(4000);
                     conn.setReadTimeout(5000);
@@ -1200,7 +1283,10 @@ public class MainActivity extends Activity {
                     runOnUiThread(new Runnable() {
                         @Override
                         public void run() {
-                            new AlertDialog.Builder(MainActivity.this)
+                            if (mUpdateDialog != null && mUpdateDialog.isShowing()) {
+                                return;
+                            }
+                            mUpdateDialog = new AlertDialog.Builder(MainActivity.this)
                                 .setTitle("🚀 App Update Available")
                                 .setMessage("A newer build of Flow Note is available on your PC server.\n\n"
                                         + "• Size: " + sizeMb + "\n"
@@ -1266,7 +1352,7 @@ public class MainActivity extends Activity {
             public void run() {
                 File apkFile = new File(getCacheDir(), "update.apk");
                 try {
-                    URL url = new URL("http://" + ip + ":" + NOTE_PORT + apkUrl);
+                    URL url = new URL("http://" + ip + ":" + mServerPort + apkUrl);
                     HttpURLConnection conn = (HttpURLConnection) url.openConnection();
                     conn.setConnectTimeout(5000);
                     conn.setReadTimeout(30000);
@@ -1361,6 +1447,29 @@ public class MainActivity extends Activity {
                 }
             }
         }
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        if (requestCode == AUDIO_PERMISSION_REQUEST_CODE) {
+            if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                if (mPendingAudioPermissionRequest != null) {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                        mPendingAudioPermissionRequest.grant(mPendingAudioPermissionRequest.getResources());
+                    }
+                    mPendingAudioPermissionRequest = null;
+                }
+            } else {
+                Toast.makeText(this, "Microphone permission is required for voice notes", Toast.LENGTH_SHORT).show();
+                if (mPendingAudioPermissionRequest != null) {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                        mPendingAudioPermissionRequest.deny();
+                    }
+                    mPendingAudioPermissionRequest = null;
+                }
+            }
+        }
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
     }
 
     @Override

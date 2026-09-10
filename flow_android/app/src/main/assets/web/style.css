@@ -324,8 +324,27 @@ button {
   font-weight: 600;
   justify-content: center;
   transition: background 0.13s;
+  cursor: pointer;
 }
 .delete-btn:hover { background: #fef2f2; }
+
+.duplicate-btn {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  width: 100%;
+  padding: 7px 10px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-secondary, #475569);
+  font-size: 11.5px;
+  font-weight: 600;
+  justify-content: center;
+  transition: background 0.13s, color 0.13s;
+  cursor: pointer;
+}
+.duplicate-btn:hover { background: #f1f5f9; color: var(--text-primary, #0f172a); }
 
 /* ── Help Panel ────────────────────────────────────────────── */
 .help-section {
@@ -490,6 +509,9 @@ kbd {
 }
 .mobile-action-btn.delete { background: #fee2e2; color: #dc2626; }
 .mobile-action-btn.delete:hover { background: #fecaca; }
+
+.mobile-action-btn.duplicate { background: #f1f5f9; color: #334155; }
+.mobile-action-btn.duplicate:hover { background: #e2e8f0; }
 
 .mobile-action-btn.edit { background: #e0f2fe; color: #0284c7; }
 .mobile-action-btn.edit:hover { background: #bae6fd; }
@@ -1034,11 +1056,12 @@ kbd {
 /* ── Selection box (marquee) ───────────────────────────────── */
 .selection-marquee {
   position: absolute;
-  border: 1.5px dashed var(--accent);
-  background: var(--accent-dim);
+  border: 1px solid rgba(0, 120, 215, 0.9);
+  background: rgba(0, 120, 215, 0.18);
   pointer-events: none;
   z-index: 9999;
-  border-radius: 3px;
+  border-radius: 2px;
+  box-sizing: border-box;
 }
 
 /* ── Adaptive Layout ───────────────────────────────────────── */
@@ -2729,6 +2752,378 @@ kbd {
   .preview-canvas-wrap {
     height: 90px !important;
   }
+}
+
+/* ============================================================
+   VOICE NOTE ELEMENT
+   ============================================================ */
+.voice-element {
+  background: #ffffff;
+  border: 1px solid var(--ui-border);
+  border-radius: 14px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08), 0 1px 3px rgba(0, 0, 0, 0.05);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  transition: box-shadow 0.15s ease, border-color 0.15s ease;
+  user-select: none;
+  box-sizing: border-box;
+}
+
+.voice-element:hover {
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.11), 0 2px 5px rgba(0, 0, 0, 0.06);
+}
+
+.voice-element.selected {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+/* Color theme accents */
+.voice-element.blueprint { border-top: 4px solid #2563eb; --voice-accent: #2563eb; --voice-accent-bg: rgba(37, 99, 235, 0.1); }
+.voice-element.yellow    { border-top: 4px solid #ca8a04; --voice-accent: #ca8a04; --voice-accent-bg: rgba(202, 138, 4, 0.12); }
+.voice-element.green     { border-top: 4px solid #16a34a; --voice-accent: #16a34a; --voice-accent-bg: rgba(22, 163, 74, 0.12); }
+.voice-element.pink      { border-top: 4px solid #db2777; --voice-accent: #db2777; --voice-accent-bg: rgba(219, 39, 119, 0.12); }
+.voice-element.purple    { border-top: 4px solid #9333ea; --voice-accent: #9333ea; --voice-accent-bg: rgba(147, 51, 234, 0.12); }
+.voice-element.orange    { border-top: 4px solid #ea580c; --voice-accent: #ea580c; --voice-accent-bg: rgba(234, 88, 12, 0.12); }
+.voice-element.charcoal  { border-top: 4px solid #334155; --voice-accent: #334155; --voice-accent-bg: rgba(51, 65, 85, 0.12); }
+
+.voice-card-inner {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  padding: 10px 14px;
+  box-sizing: border-box;
+  background: #ffffff;
+  justify-content: space-between;
+}
+
+.voice-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.voice-title-wrap {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex: 1;
+  min-width: 0;
+}
+
+.voice-icon {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  background: var(--voice-accent-bg, rgba(147, 51, 234, 0.12));
+  color: var(--voice-accent, #9333ea);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.voice-icon svg {
+  width: 14px;
+  height: 14px;
+}
+
+.voice-title-input {
+  border: none;
+  background: transparent;
+  font-size: 13px;
+  font-weight: 600;
+  color: #1e293b;
+  width: 100%;
+  padding: 2px 4px;
+  border-radius: 4px;
+  outline: none;
+  font-family: inherit;
+}
+.voice-title-input:hover, .voice-title-input:focus {
+  background: rgba(0, 0, 0, 0.05);
+}
+
+.voice-del-btn {
+  background: transparent;
+  border: none;
+  color: #94a3b8;
+  cursor: pointer;
+  padding: 3px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.12s, background 0.12s;
+}
+.voice-del-btn:hover {
+  color: #dc2626;
+  background: rgba(220, 38, 38, 0.1);
+}
+
+/* ── Content Body ── */
+.voice-body {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  margin-top: 6px;
+}
+
+/* ── State: Idle (Not Recorded Yet) ── */
+.voice-idle-wrap {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+}
+
+.voice-record-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: #fee2e2;
+  color: #dc2626;
+  border: 1px solid #fca5a5;
+  border-radius: 20px;
+  padding: 8px 16px;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  flex-shrink: 0;
+}
+.voice-record-btn:hover {
+  background: #fecaca;
+  transform: scale(1.02);
+}
+.voice-record-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #dc2626;
+}
+
+.voice-idle-hint {
+  font-size: 11.5px;
+  color: #64748b;
+  line-height: 1.3;
+}
+
+/* ── State: Active Recording ── */
+.voice-recording-wrap {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  gap: 8px;
+}
+
+.voice-rec-badge {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: #fee2e2;
+  color: #dc2626;
+  padding: 3px 8px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+}
+
+.voice-rec-dot-pulsing {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #dc2626;
+  animation: recPulse 1.2s infinite ease-in-out;
+}
+
+@keyframes recPulse {
+  0% { transform: scale(0.9); opacity: 1; }
+  50% { transform: scale(1.3); opacity: 0.5; }
+  100% { transform: scale(0.9); opacity: 1; }
+}
+
+.voice-live-time {
+  font-family: 'SF Mono', 'Roboto Mono', Menlo, Consolas, monospace;
+  font-size: 14px;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.voice-live-eq {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: 24px;
+  flex: 1;
+  padding: 0 8px;
+  justify-content: center;
+}
+
+.voice-eq-bar {
+  width: 3px;
+  height: 6px;
+  background: var(--voice-accent, #9333ea);
+  border-radius: 2px;
+  transition: height 0.08s ease;
+}
+
+.voice-rec-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.voice-stop-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  background: #dc2626;
+  color: #ffffff;
+  border: none;
+  border-radius: 16px;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+.voice-stop-btn:hover {
+  background: #b91c1c;
+}
+
+.voice-cancel-btn {
+  background: #f1f5f9;
+  border: none;
+  color: #64748b;
+  border-radius: 50%;
+  width: 26px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+.voice-cancel-btn:hover {
+  background: #e2e8f0;
+  color: #0f172a;
+}
+
+/* ── State: Playback Ready ── */
+.voice-player-wrap {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  gap: 10px;
+}
+
+.voice-play-btn {
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  background: var(--voice-accent, #9333ea);
+  color: #ffffff;
+  border: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex-shrink: 0;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+  transition: transform 0.12s ease, filter 0.12s ease;
+}
+.voice-play-btn:hover {
+  transform: scale(1.06);
+  filter: brightness(1.08);
+}
+.voice-play-btn svg {
+  width: 16px;
+  height: 16px;
+}
+
+.voice-player-center {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1;
+  min-width: 0;
+}
+
+.voice-waveform-wrap {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: 28px;
+  cursor: pointer;
+  padding: 2px 0;
+}
+
+.voice-waveform-bar {
+  flex: 1;
+  min-width: 2px;
+  max-width: 4px;
+  height: 10px;
+  background: #cbd5e1;
+  border-radius: 2px;
+  transition: background 0.1s ease, height 0.1s ease;
+}
+
+.voice-waveform-bar.played {
+  background: var(--voice-accent, #9333ea);
+}
+
+.voice-player-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+  color: #64748b;
+  font-family: 'SF Mono', 'Roboto Mono', Menlo, Consolas, monospace;
+}
+
+.voice-player-right {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.voice-speed-btn {
+  background: #f1f5f9;
+  border: 1px solid #e2e8f0;
+  color: #475569;
+  border-radius: 6px;
+  padding: 2px 6px;
+  font-size: 10.5px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.voice-speed-btn:hover {
+  background: #e2e8f0;
+  color: #0f172a;
+}
+
+.voice-rerecord-btn {
+  background: transparent;
+  border: none;
+  color: #94a3b8;
+  cursor: pointer;
+  padding: 3px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.voice-rerecord-btn:hover {
+  color: #475569;
+  background: #f1f5f9;
 }
 
 

@@ -67,6 +67,9 @@
         <button class="tool-btn" id="tool-timer" data-tooltip="Timer  T">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="13" r="8"/><polyline points="12 9 12 13 15 15"/><path d="M12 2v3"/><path d="M10 2h4"/><path d="M19 6l-1.5 1.5"/></svg>
         </button>
+        <button class="tool-btn" id="tool-voice" data-tooltip="Voice Note  M">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="22"/><line x1="8" y1="22" x2="16" y2="22"/></svg>
+        </button>
         <button class="tool-btn" id="tool-timer-records" data-tooltip="Timer Records Database">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
         </button>
@@ -88,7 +91,11 @@
           <button class="color-swatch charcoal"      data-color="charcoal"  title="Charcoal"></button>
         </div>
         <div class="toolbar-divider"></div>
-        <button class="delete-btn" id="desktop-delete-btn">
+        <button class="duplicate-btn" id="desktop-duplicate-btn" title="Duplicate selected (Ctrl+D)">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="15" height="15"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+          Duplicate
+        </button>
+        <button class="delete-btn" id="desktop-delete-btn" title="Delete selected (Del)">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="16" height="16"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4h6v2"/></svg>
           Delete
         </button>
@@ -103,7 +110,12 @@
         </button>
         <div class="help-panel" id="help-panel">
           <div class="help-title">Keyboard Shortcuts</div>
-          <div class="help-row"><kbd>V</kbd><span>Select / Pan</span></div>
+          <div class="help-row"><kbd>V</kbd><span>Select tool</span></div>
+          <div class="help-row"><kbd>Drag</kbd><span>Rubber-band select</span></div>
+          <div class="help-row"><kbd>Ctrl</kbd>+<kbd>A</kbd><span>Select all</span></div>
+          <div class="help-row"><kbd>Ctrl</kbd>+<kbd>D</kbd><span>Duplicate</span></div>
+          <div class="help-row"><kbd>Arrows</kbd><span>Nudge (Shift=10px)</span></div>
+          <div class="help-row"><kbd>Del</kbd><span>Delete selected</span></div>
           <div class="help-row"><kbd>N</kbd><span>Sticky Note</span></div>
           <div class="help-row"><kbd>R</kbd><span>Rectangle</span></div>
           <div class="help-row"><kbd>O</kbd><span>Ellipse</span></div>
@@ -112,10 +124,9 @@
           <div class="help-row"><kbd>D</kbd><span>Freehand Draw</span></div>
           <div class="help-row"><kbd>I</kbd><span>Image Link</span></div>
           <div class="help-row"><kbd>T</kbd><span>Time Tracker</span></div>
-          <div class="help-row"><kbd>Del</kbd><span>Remove selected</span></div>
+          <div class="help-row"><kbd>M</kbd><span>Voice Note</span></div>
           <div class="help-row"><kbd>Scroll</kbd><span>Zoom</span></div>
           <div class="help-row"><kbd>Space</kbd>+<kbd>drag</kbd><span>Pan</span></div>
-          <div class="help-row"><kbd>Shift</kbd>+<kbd>drag</kbd><span>Multi-select</span></div>
           <div class="help-row"><kbd>Esc</kbd><span>Deselect</span></div>
         </div>
       </div>
@@ -148,6 +159,10 @@
             <button class="mobile-action-btn edit" id="mobile-edit-btn">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="16" height="16"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 013 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
               Edit Text
+            </button>
+            <button class="mobile-action-btn duplicate" id="mobile-duplicate-btn">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="16" height="16"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+              Duplicate
             </button>
             <button class="mobile-action-btn delete" id="mobile-delete-btn">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="16" height="16"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M9 6V4h6v2"/></svg>
@@ -194,6 +209,10 @@
         <button class="mobile-btn" id="m-tool-timer">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="22" height="22"><circle cx="12" cy="13" r="8"/><polyline points="12 9 12 13 15 15"/><path d="M12 2v3"/><path d="M10 2h4"/><path d="M19 6l-1.5 1.5"/></svg>
           <span>Timer</span>
+        </button>
+        <button class="mobile-btn" id="m-tool-voice">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="22" height="22"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="22"/><line x1="8" y1="22" x2="16" y2="22"/></svg>
+          <span>Voice</span>
         </button>
         <button class="mobile-btn" id="m-tool-timer-records">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="22" height="22"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>

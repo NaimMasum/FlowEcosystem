@@ -78,8 +78,12 @@ const shapeTextEditors = new Map(); // id → enterShapeEdit()
 let resizeHandleType = null; // 'nw' | 'ne' | 'se' | 'sw' | 'start' | 'end'
 
 // Selection-box marquee
-let marqueeEl    = null;
-let marqueeStart = { x: 0, y: 0 }; // client coords
+let marqueeEl               = null;
+let marqueeStart            = { x: 0, y: 0 }; // client coords
+let marqueeAdditive         = false;
+let initialMarqueeSelection = new Set();
+let clickedAlreadySelected  = null;
+let clickedAdditive         = false;
 
 // Pinch-zoom state
 let prevPinchDist = null;
@@ -445,6 +449,8 @@ function buildNode(el, animate) {
     buildLinkContent(node, el);
   } else if (el.type === 'timer') {
     buildTimerContent(node, el);
+  } else if (el.type === 'voice') {
+    buildVoiceContent(node, el);
   } else if (el.type === 'draw') {
     buildDrawContent(node, el);
   } else {
@@ -1435,6 +1441,514 @@ function syncDrawSVG(node, el) {
   svg.appendChild(path);
 }
 
+// ─────────────────────────────────────────────────────────────
+// VOICE NOTE ELEMENT LOGIC
+// ─────────────────────────────────────────────────────────────
+const voicePlayers   = new Map(); // id -> { audio, updateProgressUI }
+const voiceRecorders = new Map(); // id -> { mediaRecorder, stream, audioCtx, animId, timerId, chunks, rawSamples }
+
+function formatAudioTime(sec) {
+  if (!sec || isNaN(sec) || !isFinite(sec)) return '00:00';
+  const s = Math.floor(sec);
+  const m = Math.floor(s / 60);
+  const remS = s % 60;
+  return `${String(m).padStart(2, '0')}:${String(remS).padStart(2, '0')}`;
+}
+
+function downsampleWaveform(rawSamples, targetCount = 28) {
+  if (!rawSamples || rawSamples.length === 0) {
+    return Array.from({ length: targetCount }, (_, i) => +(0.25 + 0.35 * Math.sin(i * 0.4) + 0.2 * Math.cos(i * 0.7)).toFixed(2));
+  }
+  const result = [];
+  const chunkSize = rawSamples.length / targetCount;
+  for (let i = 0; i < targetCount; i++) {
+    const start = Math.floor(i * chunkSize);
+    const end = Math.min(rawSamples.length, Math.floor((i + 1) * chunkSize));
+    let sum = 0, count = 0;
+    for (let j = start; j < end; j++) {
+      sum += rawSamples[j];
+      count++;
+    }
+    const avg = count ? (sum / count) : 0.2;
+    result.push(+Math.max(0.15, Math.min(1.0, avg)).toFixed(2));
+  }
+  return result;
+}
+
+function cleanupVoiceNode(id) {
+  const p = voicePlayers.get(id);
+  if (p) {
+    if (p.audio) { p.audio.pause(); p.audio.src = ''; }
+    voicePlayers.delete(id);
+  }
+  const r = voiceRecorders.get(id);
+  if (r) {
+    try { if (r.stream) r.stream.getTracks().forEach(t => t.stop()); } catch(_) {}
+    try { if (r.audioCtx && r.audioCtx.state !== 'closed') r.audioCtx.close(); } catch(_) {}
+    if (r.animId) cancelAnimationFrame(r.animId);
+    if (r.timerId) clearInterval(r.timerId);
+    voiceRecorders.delete(id);
+  }
+}
+
+function buildVoiceContent(node, el) {
+  node.classList.add('voice-element');
+  const inner = document.createElement('div');
+  inner.className = 'voice-card-inner';
+
+  // 1. Header: Icon + Title Input + Delete Button
+  const header = document.createElement('div');
+  header.className = 'voice-header';
+
+  const titleWrap = document.createElement('div');
+  titleWrap.className = 'voice-title-wrap';
+
+  const icon = document.createElement('div');
+  icon.className = 'voice-icon';
+  icon.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="22"/><line x1="8" y1="22" x2="16" y2="22"/></svg>`;
+
+  const titleInput = document.createElement('input');
+  titleInput.type = 'text';
+  titleInput.className = 'voice-title-input';
+  titleInput.value = el.title || 'Voice Note';
+  titleInput.placeholder = 'Voice Note...';
+  titleInput.addEventListener('pointerdown', e => e.stopPropagation());
+  titleInput.addEventListener('keydown', e => {
+    e.stopPropagation();
+    if (e.key === 'Enter') titleInput.blur();
+  });
+  titleInput.addEventListener('change', () => {
+    el.title = titleInput.value.trim() || 'Voice Note';
+    sendOp('update', { element: el });
+  });
+
+  titleWrap.appendChild(icon);
+  titleWrap.appendChild(titleInput);
+
+  const delBtn = document.createElement('button');
+  delBtn.className = 'voice-del-btn';
+  delBtn.title = 'Delete voice note';
+  delBtn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="14" height="14"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`;
+  delBtn.addEventListener('pointerdown', e => e.stopPropagation());
+  delBtn.addEventListener('click', e => {
+    e.stopPropagation();
+    cleanupVoiceNode(el.id);
+    dropNode(el.id);
+    delete elements[el.id];
+    selectedIds.delete(el.id);
+    sendOp('delete', { id: el.id });
+    syncSelectionUI();
+  });
+
+  header.appendChild(titleWrap);
+  header.appendChild(delBtn);
+  inner.appendChild(header);
+
+  // 2. Body Container
+  const body = document.createElement('div');
+  body.className = 'voice-body';
+  inner.appendChild(body);
+  node.appendChild(inner);
+
+  renderVoiceBody(node, el, body);
+}
+
+function renderVoiceBody(node, el, body) {
+  cleanupVoiceNode(el.id);
+  body.innerHTML = '';
+  node.dataset.audioUrl = el.audioUrl || '';
+
+  if (el.audioUrl) {
+    renderVoicePlayer(node, el, body);
+  } else {
+    renderVoiceIdle(node, el, body);
+  }
+}
+
+function renderVoiceIdle(node, el, body) {
+  const idleWrap = document.createElement('div');
+  idleWrap.className = 'voice-idle-wrap';
+
+  const recBtn = document.createElement('button');
+  recBtn.className = 'voice-record-btn';
+  recBtn.innerHTML = `<div class="voice-record-dot"></div><span>Record</span>`;
+  recBtn.addEventListener('pointerdown', e => e.stopPropagation());
+  recBtn.addEventListener('click', e => {
+    e.stopPropagation();
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      showToast('❌ Audio recording is not supported in this browser');
+      return;
+    }
+    navigator.mediaDevices.getUserMedia({ audio: true })
+      .then(stream => {
+        startVoiceRecording(node, el, body, stream);
+      })
+      .catch(err => {
+        console.error('Mic access error:', err);
+        showToast('❌ Microphone permission denied');
+      });
+  });
+
+  const hint = document.createElement('div');
+  hint.className = 'voice-idle-hint';
+  hint.textContent = 'Click to record voice memo';
+
+  idleWrap.appendChild(recBtn);
+  idleWrap.appendChild(hint);
+  body.appendChild(idleWrap);
+}
+
+function startVoiceRecording(node, el, body, stream) {
+  body.innerHTML = '';
+
+  // Setup Web Audio Analyser
+  let audioCtx = null;
+  let analyser = null;
+  let dataArray = null;
+  try {
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    if (AudioCtx) {
+      audioCtx = new AudioCtx();
+      const source = audioCtx.createMediaStreamSource(stream);
+      analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 64;
+      source.connect(analyser);
+      dataArray = new Uint8Array(analyser.frequencyBinCount);
+    }
+  } catch (err) {
+    console.warn('AudioContext not available:', err);
+  }
+
+  // Setup MediaRecorder
+  let mimeType = '';
+  const candidateTypes = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg'];
+  for (const t of candidateTypes) {
+    if (typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported(t)) {
+      mimeType = t;
+      break;
+    }
+  }
+
+  let mediaRecorder;
+  try {
+    mediaRecorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+  } catch (e) {
+    mediaRecorder = new MediaRecorder(stream);
+  }
+
+  const chunks = [];
+  mediaRecorder.ondataavailable = e => {
+    if (e.data && e.data.size > 0) chunks.push(e.data);
+  };
+
+  const rawSamples = [];
+  let elapsedSeconds = 0;
+
+  // Build Active Recording UI
+  const recWrap = document.createElement('div');
+  recWrap.className = 'voice-recording-wrap';
+
+  const recBadge = document.createElement('div');
+  recBadge.className = 'voice-rec-badge';
+  recBadge.innerHTML = `<div class="voice-rec-dot-pulsing"></div><span>REC</span>`;
+
+  const timeEl = document.createElement('div');
+  timeEl.className = 'voice-live-time';
+  timeEl.textContent = '00:00';
+
+  const eqWrap = document.createElement('div');
+  eqWrap.className = 'voice-live-eq';
+  const eqBars = [];
+  for (let i = 0; i < 14; i++) {
+    const b = document.createElement('div');
+    b.className = 'voice-eq-bar';
+    eqWrap.appendChild(b);
+    eqBars.push(b);
+  }
+
+  const actions = document.createElement('div');
+  actions.className = 'voice-rec-actions';
+
+  const stopBtn = document.createElement('button');
+  stopBtn.className = 'voice-stop-btn';
+  stopBtn.innerHTML = `<svg viewBox="0 0 24 24" fill="currentColor" width="12" height="12"><rect x="4" y="4" width="16" height="16" rx="2"/></svg> Done`;
+  stopBtn.addEventListener('pointerdown', e => e.stopPropagation());
+
+  const cancelBtn = document.createElement('button');
+  cancelBtn.className = 'voice-cancel-btn';
+  cancelBtn.title = 'Cancel recording';
+  cancelBtn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" width="14" height="14"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`;
+  cancelBtn.addEventListener('pointerdown', e => e.stopPropagation());
+
+  actions.appendChild(stopBtn);
+  actions.appendChild(cancelBtn);
+
+  recWrap.appendChild(recBadge);
+  recWrap.appendChild(timeEl);
+  recWrap.appendChild(eqWrap);
+  recWrap.appendChild(actions);
+  body.appendChild(recWrap);
+
+  // Timer loop
+  const timerId = setInterval(() => {
+    elapsedSeconds++;
+    timeEl.textContent = formatAudioTime(elapsedSeconds);
+  }, 1000);
+
+  // Animation frame loop for EQ and volume sampling
+  let animId = null;
+  const updateEQ = () => {
+    if (analyser && dataArray) {
+      analyser.getByteFrequencyData(dataArray);
+      let sum = 0;
+      for (let i = 0; i < dataArray.length; i++) {
+        sum += dataArray[i];
+      }
+      const avg = sum / (dataArray.length * 255);
+      rawSamples.push(avg);
+
+      // Animate eqBars
+      eqBars.forEach((b, idx) => {
+        const val = (dataArray[idx % dataArray.length] / 255) || 0.1;
+        const h = Math.max(4, Math.min(22, Math.round(val * 24)));
+        b.style.height = `${h}px`;
+      });
+    }
+    animId = requestAnimationFrame(updateEQ);
+  };
+  animId = requestAnimationFrame(updateEQ);
+
+  voiceRecorders.set(el.id, { mediaRecorder, stream, audioCtx, animId, timerId, chunks, rawSamples });
+
+  // Cancel Handler
+  cancelBtn.addEventListener('click', e => {
+    e.stopPropagation();
+    cleanupVoiceNode(el.id);
+    renderVoiceBody(node, el, body);
+  });
+
+  // Stop Handler
+  stopBtn.addEventListener('click', e => {
+    e.stopPropagation();
+    if (mediaRecorder.state !== 'inactive') {
+      stopBtn.disabled = true;
+      stopBtn.textContent = 'Saving...';
+      mediaRecorder.onstop = () => {
+        const blob = new Blob(chunks, { type: mediaRecorder.mimeType || 'audio/webm' });
+        const finalDuration = elapsedSeconds || 1;
+        const finalWaveform = downsampleWaveform(rawSamples, 28);
+
+        cleanupVoiceNode(el.id);
+
+        showToast('💾 Uploading voice note...');
+        const reader = new FileReader();
+        reader.onloadend = () => {
+          const base64Data = reader.result;
+          const ext = (mediaRecorder.mimeType && mediaRecorder.mimeType.includes('mp4')) ? 'mp4' : 'webm';
+          const filename = `voice_${Date.now()}.${ext}`;
+
+          fetch('/upload', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ filename, fileData: base64Data })
+          })
+          .then(r => r.json())
+          .then(data => {
+            if (data && data.url) {
+              el.audioUrl = data.url;
+              el.duration = finalDuration;
+              el.waveform = finalWaveform;
+              renderVoiceBody(node, el, body);
+              sendOp('update', { element: el });
+              showToast('🎙️ Voice note saved!');
+            } else {
+              showToast('❌ Failed to upload audio');
+              renderVoiceBody(node, el, body);
+            }
+          })
+          .catch(err => {
+            console.error('Upload error:', err);
+            showToast('❌ Network error uploading voice note');
+            renderVoiceBody(node, el, body);
+          });
+        };
+        reader.readAsDataURL(blob);
+      };
+
+      try { mediaRecorder.stop(); } catch (_) {}
+    }
+  });
+
+  mediaRecorder.start(250);
+}
+
+function renderVoicePlayer(node, el, body) {
+  const playerWrap = document.createElement('div');
+  playerWrap.className = 'voice-player-wrap';
+
+  // Audio element
+  const audio = new Audio(el.audioUrl);
+  audio.preload = 'metadata';
+
+  // Play / Pause Button
+  const playBtn = document.createElement('button');
+  playBtn.className = 'voice-play-btn';
+  playBtn.title = 'Play';
+  const playSvg = `<svg viewBox="0 0 24 24" fill="currentColor"><polygon points="6 3 20 12 6 21 6 3"/></svg>`;
+  const pauseSvg = `<svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>`;
+  playBtn.innerHTML = playSvg;
+  playBtn.addEventListener('pointerdown', e => e.stopPropagation());
+
+  // Center: Waveform + Time
+  const centerWrap = document.createElement('div');
+  centerWrap.className = 'voice-player-center';
+
+  const waveWrap = document.createElement('div');
+  waveWrap.className = 'voice-waveform-wrap';
+  waveWrap.addEventListener('pointerdown', e => e.stopPropagation());
+
+  const waveBars = [];
+  const waveformData = (el.waveform && el.waveform.length) ? el.waveform : downsampleWaveform([], 28);
+  waveformData.forEach(val => {
+    const bar = document.createElement('div');
+    bar.className = 'voice-waveform-bar';
+    const h = Math.max(6, Math.min(26, Math.round(val * 26)));
+    bar.style.height = `${h}px`;
+    waveWrap.appendChild(bar);
+    waveBars.push(bar);
+  });
+
+  // Seeking on waveform
+  const handleSeek = (clientX) => {
+    const r = waveWrap.getBoundingClientRect();
+    const pct = Math.max(0, Math.min(1, (clientX - r.left) / r.width));
+    const targetTime = pct * (audio.duration || el.duration || 0);
+    audio.currentTime = targetTime;
+    updateProgressUI();
+  };
+
+  waveWrap.addEventListener('click', e => {
+    e.stopPropagation();
+    handleSeek(e.clientX);
+  });
+
+  const metaRow = document.createElement('div');
+  metaRow.className = 'voice-player-meta';
+
+  const curTimeEl = document.createElement('span');
+  curTimeEl.textContent = '00:00';
+
+  const durTimeEl = document.createElement('span');
+  durTimeEl.textContent = formatAudioTime(el.duration);
+
+  metaRow.appendChild(curTimeEl);
+  metaRow.appendChild(durTimeEl);
+
+  centerWrap.appendChild(waveWrap);
+  centerWrap.appendChild(metaRow);
+
+  // Right actions: Speed + Re-record
+  const rightWrap = document.createElement('div');
+  rightWrap.className = 'voice-player-right';
+
+  let currentSpeed = 1.0;
+  const speedBtn = document.createElement('button');
+  speedBtn.className = 'voice-speed-btn';
+  speedBtn.textContent = '1x';
+  speedBtn.title = 'Change playback speed';
+  speedBtn.addEventListener('pointerdown', e => e.stopPropagation());
+  speedBtn.addEventListener('click', e => {
+    e.stopPropagation();
+    if (currentSpeed === 1.0) currentSpeed = 1.5;
+    else if (currentSpeed === 1.5) currentSpeed = 2.0;
+    else currentSpeed = 1.0;
+    audio.playbackRate = currentSpeed;
+    speedBtn.textContent = currentSpeed + 'x';
+  });
+
+  const rerecordBtn = document.createElement('button');
+  rerecordBtn.className = 'voice-rerecord-btn';
+  rerecordBtn.title = 'Re-record voice memo';
+  rerecordBtn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="14" height="14"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>`;
+  rerecordBtn.addEventListener('pointerdown', e => e.stopPropagation());
+  rerecordBtn.addEventListener('click', e => {
+    e.stopPropagation();
+    audio.pause();
+    el.audioUrl = '';
+    el.waveform = [];
+    el.duration = 0;
+    renderVoiceBody(node, el, body);
+    sendOp('update', { element: el });
+  });
+
+  rightWrap.appendChild(speedBtn);
+  rightWrap.appendChild(rerecordBtn);
+
+  playerWrap.appendChild(playBtn);
+  playerWrap.appendChild(centerWrap);
+  playerWrap.appendChild(rightWrap);
+  body.appendChild(playerWrap);
+
+  const updateProgressUI = () => {
+    curTimeEl.textContent = formatAudioTime(audio.currentTime);
+    const totalDur = audio.duration || el.duration || 1;
+    const progress = Math.max(0, Math.min(1, audio.currentTime / totalDur));
+    const activeIndex = Math.floor(progress * waveBars.length);
+    waveBars.forEach((bar, idx) => {
+      bar.classList.toggle('played', idx <= activeIndex);
+    });
+  };
+
+  audio.addEventListener('loadedmetadata', () => {
+    if (audio.duration && isFinite(audio.duration)) {
+      durTimeEl.textContent = formatAudioTime(audio.duration);
+    }
+  });
+
+  audio.addEventListener('timeupdate', updateProgressUI);
+
+  audio.addEventListener('ended', () => {
+    playBtn.innerHTML = playSvg;
+    audio.currentTime = 0;
+    updateProgressUI();
+  });
+
+  playBtn.addEventListener('click', e => {
+    e.stopPropagation();
+    if (audio.paused) {
+      // Pause any other playing voice notes
+      voicePlayers.forEach((p, otherId) => {
+        if (otherId !== el.id && p.audio) {
+          p.audio.pause();
+        }
+      });
+      audio.play().then(() => {
+        playBtn.innerHTML = pauseSvg;
+      }).catch(err => {
+        console.error('Play error:', err);
+      });
+    } else {
+      audio.pause();
+      playBtn.innerHTML = playSvg;
+    }
+  });
+
+  voicePlayers.set(el.id, { audio, updateProgressUI });
+}
+
+function syncVoiceNode(node, el) {
+  const titleInput = node.querySelector('.voice-title-input');
+  if (titleInput && document.activeElement !== titleInput) {
+    titleInput.value = el.title || 'Voice Note';
+  }
+  const currentUrl = node.dataset.audioUrl || '';
+  if (currentUrl !== (el.audioUrl || '')) {
+    node.dataset.audioUrl = el.audioUrl || '';
+    const body = node.querySelector('.voice-body');
+    if (body) renderVoiceBody(node, el, body);
+  }
+}
+
 function buildShapeContent(node, el) {
   // ── SVG layer (the actual drawn shape) ───────────────
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -1558,6 +2072,8 @@ function syncNode(el) {
     // file and link elements do not use SVG
   } else if (el.type === 'timer') {
     syncTimerNode(node, el);
+  } else if (el.type === 'voice') {
+    syncVoiceNode(node, el);
   } else if (el.type === 'draw') {
     syncDrawSVG(node, el);
   } else {
@@ -1664,6 +2180,7 @@ function clearAllNodes() {
 
 function dropNode(id) {
   stopTimerTick(id);
+  cleanupVoiceNode(id);
   const n = elementNodes.get(id);
   if (n) { n.remove(); elementNodes.delete(id); }
   shapeTextEditors.delete(id); // clean up editor registry
@@ -1768,6 +2285,9 @@ function setupCanvasPointers() {
   viewport.addEventListener('pointermove',   onCanvasMove);
   viewport.addEventListener('pointerup',     onCanvasUp);
   viewport.addEventListener('pointercancel', onCanvasUp);
+  viewport.addEventListener('contextmenu',   e => {
+    if (e.target === world || e.target === viewport) e.preventDefault();
+  });
 
   // ── Drag image files directly onto the canvas ──────────
   viewport.addEventListener('dragenter', e => {
@@ -1996,36 +2516,32 @@ function onCanvasDown(e) {
     return;
   }
 
-  // ── Spacebar panning ────────────────────────────────────
-  if (isSpaceHeld) {
-    isDraggingCanvas = true;
-    canvasDragStartClientX = e.clientX;
-    canvasDragStartClientY = e.clientY;
-    canvasDragStartPanX    = panX;
-    canvasDragStartPanY    = panY;
+  // ── Canvas navigation: Spacebar, middle mouse, right-click, or touch pan ──
+  if (isSpaceHeld || e.button === 1 || e.button === 2 || (e.pointerType === 'touch' && !e.shiftKey)) {
+    if (e.target === world || e.target === viewport) {
+      isDraggingCanvas = true;
+      canvasDragStartClientX = e.clientX;
+      canvasDragStartClientY = e.clientY;
+      canvasDragStartPanX    = panX;
+      canvasDragStartPanY    = panY;
+    }
     return;
   }
 
-  // ── Click on empty canvas → deselect ───────────────────
-  if (e.target === world || e.target === viewport) {
-    deselect();
-  }
-
-  // ── Shift-drag → marquee selection ─────────────────────
-  if (e.shiftKey && e.button === 0) {
+  // ── Left-click on empty canvas → Windows File Manager Marquee Selection ──
+  if ((e.target === world || e.target === viewport) && e.button === 0) {
+    marqueeAdditive = e.shiftKey || e.ctrlKey || e.metaKey;
+    if (!marqueeAdditive) {
+      deselect();
+      initialMarqueeSelection.clear();
+    } else {
+      initialMarqueeSelection = new Set(selectedIds);
+    }
     isDragSelecting = true;
     marqueeStart    = { x: e.clientX, y: e.clientY };
     createMarquee();
+    updateMarquee(e.clientX, e.clientY);
     return;
-  }
-
-  // ── Normal canvas pan ───────────────────────────────────
-  if (e.target === world || e.target === viewport) {
-    isDraggingCanvas = true;
-    canvasDragStartClientX = e.clientX;
-    canvasDragStartClientY = e.clientY;
-    canvasDragStartPanX    = panX;
-    canvasDragStartPanY    = panY;
   }
 }
 
@@ -2119,6 +2635,7 @@ function onCanvasMove(e) {
       if (Math.hypot(clientDx, clientDy) < DRAG_THRESHOLD) return;
       // Threshold exceeded — apply visual lift now
       dragThresholdMet = true;
+      clickedAlreadySelected = null; // Dragging has begun; do not narrow selection on mouse up
       dragElementSnaps.forEach(snap => {
         const node = elementNodes.get(snap.id);
         if (node) { node.classList.add('dragging'); node.style.transform = 'scale(1.025)'; }
@@ -2135,9 +2652,9 @@ function onCanvasMove(e) {
       if (el.type === 'line' || el.type === 'arrow') {
         el.x1 = snap.x1 + dxW; el.y1 = snap.y1 + dyW;
         el.x2 = snap.x2 + dxW; el.y2 = snap.y2 + dyW;
-        // Break bind if we drag the arrow itself
-        if (el.startBind) delete el.startBind;
-        if (el.endBind) delete el.endBind;
+        // Break bind only if bound target isn't also being moved in this selection
+        if (el.startBind && !selectedIds.has(el.startBind)) delete el.startBind;
+        if (el.endBind && !selectedIds.has(el.endBind)) delete el.endBind;
         fixBBox(el);
       } else {
         el.x = snap.x + dxW;
@@ -2258,6 +2775,19 @@ function onCanvasUp(e) {
     });
   }
 
+  // Handle click on an already-selected element that was NOT dragged (simple click)
+  if (clickedAlreadySelected && !dragThresholdMet) {
+    if (clickedAdditive) {
+      selectedIds.delete(clickedAlreadySelected);
+      if (elements[clickedAlreadySelected]) syncNode(elements[clickedAlreadySelected]);
+      syncSelectionUI();
+    } else {
+      select(clickedAlreadySelected, false);
+    }
+  }
+  clickedAlreadySelected = null;
+  clickedAdditive = false;
+
   // Finish marquee
   if (isDragSelecting) finishMarquee(e.clientX, e.clientY);
 
@@ -2289,15 +2819,17 @@ function onElementPointerDown(e, id) {
 
   const additive = e.shiftKey || e.ctrlKey || e.metaKey;
 
-  if (selectedIds.has(id) && additive) {
-    // Toggle off
-    selectedIds.delete(id);
-    if (elements[id]) syncNode(elements[id]);
-    syncSelectionUI();
-    return;
+  if (selectedIds.has(id)) {
+    // In Windows File Manager style:
+    // If the element is already selected, do NOT deselect other items on pointerdown.
+    // This allows grabbing any item in the selection to move the whole group!
+    clickedAlreadySelected = id;
+    clickedAdditive = additive;
+  } else {
+    clickedAlreadySelected = null;
+    clickedAdditive = false;
+    select(id, additive);
   }
-
-  select(id, additive);
 
   // Start element drag — but movement is deferred until DRAG_THRESHOLD is exceeded
   isDraggingElement  = true;
@@ -2455,28 +2987,54 @@ function updateMarquee(cx, cy) {
     left: `${x}px`, top: `${y}px`,
     width: `${w}px`, height: `${h}px`,
   });
-}
 
-function finishMarquee(cx, cy) {
-  if (marqueeEl) { marqueeEl.remove(); marqueeEl = null; }
+  if (w < 4 && h < 4) return;
 
-  const x1c = Math.min(marqueeStart.x, cx);
-  const y1c = Math.min(marqueeStart.y, cy);
-  const x2c = Math.max(marqueeStart.x, cx);
-  const y2c = Math.max(marqueeStart.y, cy);
+  const tl = clientToWorld(x, y);
+  const br = clientToWorld(x + w, y + h);
 
-  const tl = clientToWorld(x1c, y1c);
-  const br = clientToWorld(x2c, y2c);
-
-  // Clear and re-select intersecting elements
+  const prevSelected = new Set(selectedIds);
   selectedIds.clear();
+
   Object.values(elements).forEach(el => {
-    if (el.x < br.x && el.x + el.w > tl.x &&
-        el.y < br.y && el.y + el.h > tl.y) {
+    let inRect = false;
+    if (el.type === 'line' || el.type === 'arrow') {
+      const minX = Math.min(el.x1, el.x2);
+      const maxX = Math.max(el.x1, el.x2);
+      const minY = Math.min(el.y1, el.y2);
+      const maxY = Math.max(el.y1, el.y2);
+      inRect = (minX < br.x && maxX > tl.x && minY < br.y && maxY > tl.y);
+    } else {
+      inRect = (el.x < br.x && el.x + el.w > tl.x &&
+                el.y < br.y && el.y + el.h > tl.y);
+    }
+
+    if (inRect || (marqueeAdditive && initialMarqueeSelection.has(el.id))) {
       selectedIds.add(el.id);
     }
   });
-  Object.values(elements).forEach(el => syncNode(el));
+
+  let changed = false;
+  Object.values(elements).forEach(el => {
+    const was = prevSelected.has(el.id);
+    const is = selectedIds.has(el.id);
+    if (was !== is) {
+      syncNode(el);
+      changed = true;
+    }
+  });
+  if (changed || prevSelected.size !== selectedIds.size) {
+    syncSelectionUI();
+  }
+}
+
+function finishMarquee(cx, cy) {
+  if (marqueeEl) {
+    marqueeEl.remove();
+    marqueeEl = null;
+  }
+  isDragSelecting = false;
+  initialMarqueeSelection.clear();
   syncSelectionUI();
 }
 
@@ -2503,6 +3061,15 @@ function createElement(type, wx, wy) {
       accumulatedMs: 0, running: false, startedAt: null,
       pomodoroDurationMs: 25 * 60 * 1000, laps: [],
       records: []
+    });
+  } else if (type === 'voice') {
+    Object.assign(el, {
+      x: wx - 150, y: wy - 65, w: 300, h: 130,
+      title: 'Voice Note',
+      color: 'purple',
+      audioUrl: '',
+      duration: 0,
+      waveform: []
     });
   } else if (type === 'rect' || type === 'ellipse') {
     Object.assign(el, { x: wx - 80, y: wy - 60, w: 160, h: 120 });
@@ -2565,6 +3132,63 @@ function deleteSelected() {
 }
 
 // ─────────────────────────────────────────────────────────────
+// DUPLICATE SELECTED
+// ─────────────────────────────────────────────────────────────
+function duplicateSelected() {
+  if (!selectedIds.size) return;
+  const newIds = [];
+  const offset = 24;
+  const idMap = new Map();
+
+  selectedIds.forEach(id => {
+    const orig = elements[id];
+    if (!orig) return;
+    const newId = 'e' + Math.random().toString(36).slice(2, 11);
+    idMap.set(id, newId);
+    const clone = JSON.parse(JSON.stringify(orig));
+    clone.id = newId;
+    clone.zIndex = nextZ();
+    if (clone.type === 'line' || clone.type === 'arrow') {
+      clone.x1 += offset; clone.y1 += offset;
+      clone.x2 += offset; clone.y2 += offset;
+    } else {
+      clone.x += offset;
+      clone.y += offset;
+      if (clone.type === 'draw' && Array.isArray(clone.points)) {
+        clone.points = clone.points.map(pt => ({ x: pt.x + offset, y: pt.y + offset }));
+      }
+    }
+    elements[newId] = clone;
+    newIds.push(newId);
+  });
+
+  newIds.forEach(nid => {
+    const el = elements[nid];
+    if (el && (el.type === 'line' || el.type === 'arrow')) {
+      if (el.startBind && idMap.has(el.startBind)) {
+        el.startBind = idMap.get(el.startBind);
+      } else {
+        delete el.startBind;
+      }
+      if (el.endBind && idMap.has(el.endBind)) {
+        el.endBind = idMap.get(el.endBind);
+      } else {
+        delete el.endBind;
+      }
+      fixBBox(el);
+    }
+    mountElement(el, true);
+    sendOp('add', { element: el });
+  });
+
+  selectedIds.clear();
+  newIds.forEach(nid => selectedIds.add(nid));
+  Object.values(elements).forEach(el => syncNode(el));
+  syncSelectionUI();
+  showToast(`Duplicated ${newIds.length} item${newIds.length > 1 ? 's' : ''}`);
+}
+
+// ─────────────────────────────────────────────────────────────
 // ACTIVE TOOL
 // ─────────────────────────────────────────────────────────────
 const toolDefs = [
@@ -2577,6 +3201,7 @@ const toolDefs = [
   { id: 'tool-draw',    mId: 'm-tool-draw',    name: 'draw'    },
   { id: 'tool-image',   mId: 'm-tool-image',   name: 'image'   },
   { id: 'tool-timer',   mId: 'm-tool-timer',   name: 'timer'   },
+  { id: 'tool-voice',   mId: 'm-tool-voice',   name: 'voice'   },
 ];
 
 function setActiveTool(name) {
@@ -2641,6 +3266,12 @@ function setupToolbar() {
   ['desktop-delete-btn', 'mobile-delete-btn'].forEach(id => {
     const btn = document.getElementById(id);
     if (btn) btn.addEventListener('click', deleteSelected);
+  });
+
+  // Duplicate buttons
+  ['desktop-duplicate-btn', 'mobile-duplicate-btn'].forEach(id => {
+    const btn = document.getElementById(id);
+    if (btn) btn.addEventListener('click', duplicateSelected);
   });
 
   // Mobile drawer close
@@ -3649,6 +4280,74 @@ function setupKeyboard() {
 
     if (ignore(e)) return;
 
+    // ── Windows File Manager / Canvas shortcuts ──────────────
+    // Ctrl+A / Cmd+A → Select all
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') {
+      e.preventDefault();
+      selectedIds = new Set(Object.keys(elements));
+      Object.values(elements).forEach(el => syncNode(el));
+      syncSelectionUI();
+      showToast(`Selected all (${selectedIds.size} items)`);
+      return;
+    }
+
+    // Ctrl+D / Cmd+D → Duplicate selected
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'd') {
+      e.preventDefault();
+      duplicateSelected();
+      return;
+    }
+
+    // Arrow keys → Nudge selected elements (1px, or 10px with Shift)
+    if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key) && selectedIds.size > 0) {
+      e.preventDefault();
+      const step = e.shiftKey ? 10 : 1;
+      let dx = 0, dy = 0;
+      if (e.key === 'ArrowUp') dy = -step;
+      if (e.key === 'ArrowDown') dy = step;
+      if (e.key === 'ArrowLeft') dx = -step;
+      if (e.key === 'ArrowRight') dx = step;
+
+      const movedNodes = new Set();
+      selectedIds.forEach(id => {
+        const el = elements[id];
+        if (!el) return;
+        if (el.type === 'line' || el.type === 'arrow') {
+          el.x1 += dx; el.y1 += dy;
+          el.x2 += dx; el.y2 += dy;
+          fixBBox(el);
+        } else {
+          el.x += dx;
+          el.y += dy;
+          movedNodes.add(id);
+        }
+        syncNode(el);
+        sendOp('update', { element: el });
+      });
+
+      if (movedNodes.size > 0) {
+        Object.values(elements).forEach(el => {
+          if ((el.type === 'line' || el.type === 'arrow') && (el.startBind || el.endBind)) {
+            let changed = false;
+            if (el.startBind && movedNodes.has(el.startBind)) {
+              const t = elements[el.startBind];
+              if (t) { el.x1 = t.x + t.w / 2; el.y1 = t.y + t.h / 2; changed = true; }
+            }
+            if (el.endBind && movedNodes.has(el.endBind)) {
+              const t = elements[el.endBind];
+              if (t) { el.x2 = t.x + t.w / 2; el.y2 = t.y + t.h / 2; changed = true; }
+            }
+            if (changed) {
+              fixBBox(el);
+              syncNode(el);
+              sendOp('update', { element: el });
+            }
+          }
+        });
+      }
+      return;
+    }
+
     switch (e.key.toLowerCase()) {
       case 'v':       setActiveTool('select'); break;
       case 'd':       setActiveTool('draw');   break;
@@ -3659,6 +4358,7 @@ function setupKeyboard() {
       case 'a':       spawnAtCenter('arrow');   break;
       case 'i':       showImageModal();          break;
       case 't':       spawnAtCenter('timer');    break;
+      case 'm':       spawnAtCenter('voice');    break;
       case 'escape':  deselect();                break;
       case 'delete':
       case 'backspace': deleteSelected();        break;

@@ -6,7 +6,7 @@ const fs = require('fs');
 const os = require('os');
 const crypto = require('crypto');
 
-const PORT = process.env.PORT || 3939;
+const PORT = process.env.PORT || 3941;
 const DATA_DIR = path.join(__dirname, 'data');
 const DATA_FILE = path.join(DATA_DIR, 'board.json');
 
