@@ -1565,6 +1565,186 @@ function renderVoiceBody(node, el, body) {
   }
 }
 
+function saveAndUploadVoiceNote(node, el, body, base64Data, ext, finalDuration, finalWaveform) {
+  showToast('💾 Uploading voice note...');
+  const filename = `voice_${Date.now()}.${ext}`;
+
+  // If in Android offline mode, save locally directly
+  if (window.AndroidBridge && typeof window.AndroidBridge.isOffline === 'function' && window.AndroidBridge.isOffline()) {
+    if (typeof window.AndroidBridge.saveLocalFile === 'function') {
+      const localUrl = window.AndroidBridge.saveLocalFile(filename, base64Data);
+      if (localUrl) {
+        el.audioUrl = localUrl;
+        el.duration = finalDuration;
+        el.waveform = finalWaveform;
+        renderVoiceBody(node, el, body);
+        showToast('🎙️ Voice note saved locally!');
+        return;
+      }
+    }
+  }
+
+  fetch('/upload', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ filename, fileData: base64Data })
+  })
+  .then(r => r.json())
+  .then(data => {
+    if (data && data.url) {
+      el.audioUrl = data.url;
+      el.duration = finalDuration;
+      el.waveform = finalWaveform;
+      renderVoiceBody(node, el, body);
+      sendOp('update', { element: el });
+      showToast('🎙️ Voice note saved!');
+    } else {
+      showToast('❌ Failed to upload audio');
+      renderVoiceBody(node, el, body);
+    }
+  })
+  .catch(err => {
+    console.error('Upload error:', err);
+    // Fallback to saving locally if server unreachable
+    if (window.AndroidBridge && typeof window.AndroidBridge.saveLocalFile === 'function') {
+      const localUrl = window.AndroidBridge.saveLocalFile(filename, base64Data);
+      if (localUrl) {
+        el.audioUrl = localUrl;
+        el.duration = finalDuration;
+        el.waveform = finalWaveform;
+        renderVoiceBody(node, el, body);
+        showToast('🎙️ Saved locally (offline)');
+        return;
+      }
+    }
+    showToast('❌ Network error uploading voice note');
+    renderVoiceBody(node, el, body);
+  });
+}
+
+function startNativeVoiceRecording(node, el, body) {
+  body.innerHTML = '';
+  const started = window.AndroidBridge.startNativeRecording();
+  if (!started) {
+    showToast('❌ Could not start microphone recording');
+    renderVoiceBody(node, el, body);
+    return;
+  }
+
+  const rawSamples = [];
+  let elapsedSeconds = 0;
+
+  // Build Active Recording UI
+  const recWrap = document.createElement('div');
+  recWrap.className = 'voice-recording-wrap';
+
+  const recBadge = document.createElement('div');
+  recBadge.className = 'voice-rec-badge';
+  recBadge.innerHTML = `<div class="voice-rec-dot-pulsing"></div><span>REC</span>`;
+
+  const timeEl = document.createElement('div');
+  timeEl.className = 'voice-live-time';
+  timeEl.textContent = '00:00';
+
+  const eqWrap = document.createElement('div');
+  eqWrap.className = 'voice-live-eq';
+  const eqBars = [];
+  for (let i = 0; i < 14; i++) {
+    const b = document.createElement('div');
+    b.className = 'voice-eq-bar';
+    eqWrap.appendChild(b);
+    eqBars.push(b);
+  }
+
+  const actions = document.createElement('div');
+  actions.className = 'voice-rec-actions';
+
+  const stopBtn = document.createElement('button');
+  stopBtn.className = 'voice-stop-btn';
+  stopBtn.innerHTML = `<svg viewBox="0 0 24 24" fill="currentColor" width="12" height="12"><rect x="4" y="4" width="16" height="16" rx="2"/></svg> Done`;
+  stopBtn.addEventListener('pointerdown', e => e.stopPropagation());
+
+  const cancelBtn = document.createElement('button');
+  cancelBtn.className = 'voice-cancel-btn';
+  cancelBtn.title = 'Cancel recording';
+  cancelBtn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" width="14" height="14"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`;
+  cancelBtn.addEventListener('pointerdown', e => e.stopPropagation());
+
+  actions.appendChild(stopBtn);
+  actions.appendChild(cancelBtn);
+
+  recWrap.appendChild(recBadge);
+  recWrap.appendChild(timeEl);
+  recWrap.appendChild(eqWrap);
+  recWrap.appendChild(actions);
+  body.appendChild(recWrap);
+
+  // Timer loop
+  const timerId = setInterval(() => {
+    elapsedSeconds++;
+    timeEl.textContent = formatAudioTime(elapsedSeconds);
+  }, 1000);
+
+  // EQ volume sampling loop using AndroidBridge.getNativeAmplitude()
+  const ampIntervalId = setInterval(() => {
+    try {
+      if (window.AndroidBridge && typeof window.AndroidBridge.getNativeAmplitude === 'function') {
+        const amp = window.AndroidBridge.getNativeAmplitude();
+        const norm = Math.min(1, Math.max(0.05, amp / 16000));
+        rawSamples.push(norm);
+
+        eqBars.forEach((b, idx) => {
+          const jitter = 0.6 + (Math.sin(idx + Date.now() / 150) * 0.4);
+          const h = Math.max(4, Math.min(22, Math.round(norm * jitter * 24)));
+          b.style.height = `${h}px`;
+        });
+      }
+    } catch (_) {}
+  }, 100);
+
+  const cleanup = () => {
+    clearInterval(timerId);
+    clearInterval(ampIntervalId);
+    voiceRecorders.delete(el.id);
+  };
+
+  voiceRecorders.set(el.id, { cleanup });
+
+  // Cancel Handler
+  cancelBtn.addEventListener('click', e => {
+    e.stopPropagation();
+    cleanup();
+    if (window.AndroidBridge && typeof window.AndroidBridge.cancelNativeRecording === 'function') {
+      window.AndroidBridge.cancelNativeRecording();
+    }
+    renderVoiceBody(node, el, body);
+  });
+
+  // Stop / Done Handler
+  stopBtn.addEventListener('click', e => {
+    e.stopPropagation();
+    stopBtn.disabled = true;
+    stopBtn.textContent = 'Saving...';
+
+    cleanup();
+
+    let base64Data = null;
+    if (window.AndroidBridge && typeof window.AndroidBridge.stopNativeRecording === 'function') {
+      base64Data = window.AndroidBridge.stopNativeRecording();
+    }
+
+    if (!base64Data) {
+      showToast('❌ Failed to capture audio recording');
+      renderVoiceBody(node, el, body);
+      return;
+    }
+
+    const finalDuration = elapsedSeconds || 1;
+    const finalWaveform = downsampleWaveform(rawSamples, 28);
+    saveAndUploadVoiceNote(node, el, body, base64Data, 'm4a', finalDuration, finalWaveform);
+  });
+}
+
 function renderVoiceIdle(node, el, body) {
   const idleWrap = document.createElement('div');
   idleWrap.className = 'voice-idle-wrap';
@@ -1575,6 +1755,21 @@ function renderVoiceIdle(node, el, body) {
   recBtn.addEventListener('pointerdown', e => e.stopPropagation());
   recBtn.addEventListener('click', e => {
     e.stopPropagation();
+
+    // 1. Android Native Recording Support (bypasses HTTP insecure-context restriction)
+    if (window.AndroidBridge && typeof window.AndroidBridge.isVoiceRecordingSupported === 'function' && window.AndroidBridge.isVoiceRecordingSupported()) {
+      if (typeof window.AndroidBridge.hasAudioPermission === 'function' && !window.AndroidBridge.hasAudioPermission()) {
+        if (typeof window.AndroidBridge.requestAudioPermission === 'function') {
+          window.AndroidBridge.requestAudioPermission();
+        }
+        showToast('🎙️ Please allow microphone permission');
+        return;
+      }
+      startNativeVoiceRecording(node, el, body);
+      return;
+    }
+
+    // 2. Standard Browser Web Audio Recording
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
       showToast('❌ Audio recording is not supported in this browser');
       return;
@@ -1740,37 +1935,11 @@ function startVoiceRecording(node, el, body, stream) {
 
         cleanupVoiceNode(el.id);
 
-        showToast('💾 Uploading voice note...');
         const reader = new FileReader();
         reader.onloadend = () => {
           const base64Data = reader.result;
           const ext = (mediaRecorder.mimeType && mediaRecorder.mimeType.includes('mp4')) ? 'mp4' : 'webm';
-          const filename = `voice_${Date.now()}.${ext}`;
-
-          fetch('/upload', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ filename, fileData: base64Data })
-          })
-          .then(r => r.json())
-          .then(data => {
-            if (data && data.url) {
-              el.audioUrl = data.url;
-              el.duration = finalDuration;
-              el.waveform = finalWaveform;
-              renderVoiceBody(node, el, body);
-              sendOp('update', { element: el });
-              showToast('🎙️ Voice note saved!');
-            } else {
-              showToast('❌ Failed to upload audio');
-              renderVoiceBody(node, el, body);
-            }
-          })
-          .catch(err => {
-            console.error('Upload error:', err);
-            showToast('❌ Network error uploading voice note');
-            renderVoiceBody(node, el, body);
-          });
+          saveAndUploadVoiceNote(node, el, body, base64Data, ext, finalDuration, finalWaveform);
         };
         reader.readAsDataURL(blob);
       };

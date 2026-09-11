@@ -23,6 +23,7 @@ import android.webkit.WebViewClient;
 import android.webkit.PermissionRequest;
 import android.Manifest;
 import android.content.pm.PackageManager;
+import android.media.MediaRecorder;
 import android.app.ProgressDialog;
 import android.content.pm.PackageInfo;
 import android.os.Build;
@@ -74,6 +75,8 @@ public class MainActivity extends Activity {
     private java.util.concurrent.ScheduledExecutorService mFileSyncScheduler = null;
     private final long FILE_SYNC_INTERVAL_SEC = 50;
     private AlertDialog mUpdateDialog = null;
+    private MediaRecorder mNativeAudioRecorder = null;
+    private File mCurrentVoiceFile = null;
 
     public class WebAppInterface {
         @JavascriptInterface
@@ -181,6 +184,132 @@ public class MainActivity extends Activity {
                 Log.e("FlowApp", "Error saving local file", e);
             }
             return null;
+        }
+
+        // ── Native Voice Recording Bridge ──────────────────────────────
+        @JavascriptInterface
+        public boolean isVoiceRecordingSupported() {
+            return true;
+        }
+
+        @JavascriptInterface
+        public boolean hasAudioPermission() {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                return checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED;
+            }
+            return true;
+        }
+
+        @JavascriptInterface
+        public void requestAudioPermission() {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                        requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, AUDIO_PERMISSION_REQUEST_CODE);
+                    }
+                }
+            });
+        }
+
+        @JavascriptInterface
+        public boolean startNativeRecording() {
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M &&
+                        checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+                    requestAudioPermission();
+                    return false;
+                }
+
+                if (mNativeAudioRecorder != null) {
+                    try { mNativeAudioRecorder.stop(); } catch (Exception ignored) {}
+                    try { mNativeAudioRecorder.release(); } catch (Exception ignored) {}
+                    mNativeAudioRecorder = null;
+                }
+
+                File cacheDir = getCacheDir();
+                mCurrentVoiceFile = new File(cacheDir, "voice_rec_" + System.currentTimeMillis() + ".m4a");
+
+                mNativeAudioRecorder = new MediaRecorder();
+                mNativeAudioRecorder.setAudioSource(MediaRecorder.AudioSource.MIC);
+                mNativeAudioRecorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4);
+                mNativeAudioRecorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC);
+                mNativeAudioRecorder.setAudioSamplingRate(44100);
+                mNativeAudioRecorder.setAudioEncodingBitRate(96000);
+                mNativeAudioRecorder.setOutputFile(mCurrentVoiceFile.getAbsolutePath());
+                mNativeAudioRecorder.prepare();
+                mNativeAudioRecorder.start();
+                Log.d("FlowApp", "Started native audio recording to: " + mCurrentVoiceFile.getAbsolutePath());
+                return true;
+            } catch (Exception e) {
+                Log.e("FlowApp", "Failed to start native recording", e);
+                if (mNativeAudioRecorder != null) {
+                    try { mNativeAudioRecorder.release(); } catch (Exception ignored) {}
+                    mNativeAudioRecorder = null;
+                }
+                return false;
+            }
+        }
+
+        @JavascriptInterface
+        public int getNativeAmplitude() {
+            if (mNativeAudioRecorder != null) {
+                try {
+                    return mNativeAudioRecorder.getMaxAmplitude();
+                } catch (Exception ignored) {}
+            }
+            return 0;
+        }
+
+        @JavascriptInterface
+        public String stopNativeRecording() {
+            if (mNativeAudioRecorder != null) {
+                try {
+                    mNativeAudioRecorder.stop();
+                } catch (Exception e) {
+                    Log.e("FlowApp", "Error stopping native recorder", e);
+                }
+                try {
+                    mNativeAudioRecorder.release();
+                } catch (Exception ignored) {}
+                mNativeAudioRecorder = null;
+            }
+
+            if (mCurrentVoiceFile != null && mCurrentVoiceFile.exists() && mCurrentVoiceFile.length() > 0) {
+                try {
+                    byte[] bytes = new byte[(int) mCurrentVoiceFile.length()];
+                    FileInputStream fis = new FileInputStream(mCurrentVoiceFile);
+                    int offset = 0;
+                    int read;
+                    while (offset < bytes.length && (read = fis.read(bytes, offset, bytes.length - offset)) != -1) {
+                        offset += read;
+                    }
+                    fis.close();
+                    mCurrentVoiceFile.delete();
+                    mCurrentVoiceFile = null;
+                    return "data:audio/mp4;base64," + Base64.encodeToString(bytes, Base64.NO_WRAP);
+                } catch (Exception e) {
+                    Log.e("FlowApp", "Failed to read recorded voice file", e);
+                }
+            }
+            return null;
+        }
+
+        @JavascriptInterface
+        public void cancelNativeRecording() {
+            if (mNativeAudioRecorder != null) {
+                try {
+                    mNativeAudioRecorder.stop();
+                } catch (Exception ignored) {}
+                try {
+                    mNativeAudioRecorder.release();
+                } catch (Exception ignored) {}
+                mNativeAudioRecorder = null;
+            }
+            if (mCurrentVoiceFile != null && mCurrentVoiceFile.exists()) {
+                mCurrentVoiceFile.delete();
+                mCurrentVoiceFile = null;
+            }
         }
     }
 
@@ -1477,6 +1606,11 @@ public class MainActivity extends Activity {
         if (mFileSyncScheduler != null) {
             mFileSyncScheduler.shutdownNow();
             mFileSyncScheduler = null;
+        }
+        if (mNativeAudioRecorder != null) {
+            try { mNativeAudioRecorder.stop(); } catch (Exception ignored) {}
+            try { mNativeAudioRecorder.release(); } catch (Exception ignored) {}
+            mNativeAudioRecorder = null;
         }
         super.onDestroy();
     }
