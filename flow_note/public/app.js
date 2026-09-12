@@ -30,9 +30,12 @@ if (statusEl) {
   });
 }
 
-// ── Board state ───────────────────────────────────────────────
-let elements    = {};          // id → element object
-let elementNodes = new Map();  // id → DOM node
+// ── Board & Pages state ───────────────────────────────────────
+let pages        = [{ id: 'page-1', name: 'Page 1', createdAt: Date.now() }];
+let currentPageId = 'page-1';
+const pageViewports = new Map(); // pageId → { panX, panY, zoom }
+let elements     = {};          // id → element object
+let elementNodes  = new Map();  // id → DOM node
 
 // ── Viewport transform ────────────────────────────────────────
 let panX = 0, panY = 0, zoom = 1;
@@ -112,6 +115,20 @@ const SHAPE_COLORS = {
 // ─────────────────────────────────────────────────────────────
 function init() {
   try {
+    const cachedPages = localStorage.getItem('flow_note_pages');
+    if (cachedPages) {
+      const parsedPages = JSON.parse(cachedPages);
+      if (Array.isArray(parsedPages) && parsedPages.length > 0) {
+        pages = parsedPages;
+      }
+    }
+    const cachedActivePage = localStorage.getItem('flow_active_page');
+    if (cachedActivePage && pages.some(p => p.id === cachedActivePage)) {
+      currentPageId = cachedActivePage;
+    } else {
+      currentPageId = pages[0].id;
+    }
+
     let cached = localStorage.getItem('flow_note_state');
     if ((!cached || cached === '{}') && window.AndroidBridge && typeof window.AndroidBridge.getBoardState === 'function') {
       const bridgeCached = window.AndroidBridge.getBoardState();
@@ -122,8 +139,11 @@ function init() {
     if (cached) {
       elements = JSON.parse(cached);
       for (const el of Object.values(elements)) {
-        fixBBox(el);
-        mountElement(el);
+        if (!el.pageId) el.pageId = pages[0].id;
+        if (el.pageId === currentPageId) {
+          fixBBox(el);
+          mountElement(el);
+        }
       }
     }
   } catch(e){}
@@ -141,6 +161,8 @@ function init() {
   setupToolbar();
   setupModals();
   setupPreviewMinimap();
+  setupPagesUI();
+  renderPagesUI();
 
   window.addEventListener('offline', () => {
     if (ws) ws.close();
@@ -155,7 +177,11 @@ function init() {
 
 // ================= OFFLINE QUEUE HELPERS =================
 function saveLocalState() {
-  try { localStorage.setItem('flow_note_state', JSON.stringify(elements)); } catch (e) {}
+  try {
+    localStorage.setItem('flow_note_pages', JSON.stringify(pages));
+    localStorage.setItem('flow_active_page', currentPageId);
+    localStorage.setItem('flow_note_state', JSON.stringify(elements));
+  } catch (e) {}
   try {
     if (window.AndroidBridge && typeof window.AndroidBridge.saveBoardState === 'function') {
       window.AndroidBridge.saveBoardState(JSON.stringify(elements));
@@ -285,6 +311,13 @@ function handleServerMsg(msg) {
   switch (msg.type) {
     case 'init': {
       const incoming = msg.elements || {};
+      if (msg.pages && Array.isArray(msg.pages) && msg.pages.length > 0) {
+        pages = msg.pages;
+      }
+      if (!pages.some(p => p.id === currentPageId)) {
+        currentPageId = pages[0].id;
+      }
+
       try {
         const queue = JSON.parse(localStorage.getItem('flow_note_queue') || '[]');
         queue.forEach(op => {
@@ -304,52 +337,95 @@ function handleServerMsg(msg) {
       const editingNode = activeEl ? activeEl.closest('.board-element') : null;
       const editingId = editingNode ? editingNode.id : null;
 
-      // Remove deleted elements
-      for (const id of Array.from(elementNodes.keys())) {
-        if (!incoming[id] && id !== editingId) {
-          dropNode(id);
-        }
+      // Assign fallback pageId if missing
+      for (const el of Object.values(incoming)) {
+        if (!el.pageId) el.pageId = pages[0].id;
       }
 
       elements = incoming;
 
-      // Reconcile elements smoothly without wiping canvas
+      // Remove deleted or inactive page elements
+      for (const id of Array.from(elementNodes.keys())) {
+        const el = elements[id];
+        if ((!el || el.pageId !== currentPageId) && id !== editingId) {
+          dropNode(id);
+        }
+      }
+
+      // Mount elements for active page
       for (const el of Object.values(elements)) {
-        fixBBox(el);
-        if (elementNodes.has(el.id)) {
-          if (el.id === editingId) {
-            syncNodePos(elementNodes.get(el.id), el);
+        if (el.pageId === currentPageId) {
+          fixBBox(el);
+          if (elementNodes.has(el.id)) {
+            if (el.id === editingId) {
+              syncNodePos(elementNodes.get(el.id), el);
+            } else {
+              syncNode(el);
+            }
           } else {
-            syncNode(el);
+            mountElement(el);
           }
-        } else {
-          mountElement(el);
         }
       }
       saveLocalState();
+      renderPagesUI();
+      updateMinimap();
       break;
     }
     case 'add': {
       const el = msg.element;
+      if (!el.pageId) el.pageId = pages[0]?.id || 'page-1';
       elements[el.id] = el;
       fixBBox(el);
-      mountElement(el, true); // true = animate
+      if (el.pageId === currentPageId) {
+        mountElement(el, true); // true = animate
+      }
+      renderPagesUI();
+      updateMinimap();
+      saveLocalState();
+      break;
+    }
+    case 'addMultiple': {
+      const arr = msg.elements || [];
+      arr.forEach(el => {
+        if (!el.pageId) el.pageId = pages[0]?.id || 'page-1';
+        elements[el.id] = el;
+        fixBBox(el);
+        if (el.pageId === currentPageId) {
+          mountElement(el, true);
+        }
+      });
+      renderPagesUI();
+      updateMinimap();
+      saveLocalState();
       break;
     }
     case 'update': {
-        const el = msg.element;
-        if (!elements[el.id]) return;
-        Object.assign(elements[el.id], el);
-        fixBBox(elements[el.id]);
-        syncNode(elements[el.id]);
-        saveLocalState();
-        break;
+      const el = msg.element;
+      if (!elements[el.id]) return;
+      Object.assign(elements[el.id], el);
+      fixBBox(elements[el.id]);
+      if (elements[el.id].pageId === currentPageId) {
+        if (elementNodes.has(el.id)) {
+          syncNode(elements[el.id]);
+        } else {
+          mountElement(elements[el.id]);
+        }
+      } else if (elementNodes.has(el.id)) {
+        dropNode(el.id);
       }
+      renderPagesUI();
+      updateMinimap();
+      saveLocalState();
+      break;
+    }
     case 'delete': {
       dropNode(msg.id);
       delete elements[msg.id];
       selectedIds.delete(msg.id);
       syncSelectionUI();
+      renderPagesUI();
+      updateMinimap();
       saveLocalState();
       break;
     }
@@ -360,7 +436,61 @@ function handleServerMsg(msg) {
         selectedIds.delete(id);
       });
       syncSelectionUI();
+      renderPagesUI();
+      updateMinimap();
       saveLocalState();
+      break;
+    }
+    case 'pageAdd': {
+      const p = msg.page;
+      if (p && !pages.some(x => x.id === p.id)) {
+        pages.push(p);
+        renderPagesUI();
+        saveLocalState();
+      }
+      break;
+    }
+    case 'pageUpdate': {
+      const p = msg.page;
+      if (p) {
+        const idx = pages.findIndex(x => x.id === p.id);
+        if (idx >= 0) {
+          pages[idx] = { ...pages[idx], ...p };
+          renderPagesUI();
+          saveLocalState();
+        }
+      }
+      break;
+    }
+    case 'pageDelete': {
+      const pageId = msg.id;
+      if (pageId) {
+        pages = pages.filter(x => x.id !== pageId);
+        for (const elId in elements) {
+          if (elements[elId].pageId === pageId) {
+            dropNode(elId);
+            delete elements[elId];
+            selectedIds.delete(elId);
+          }
+        }
+        if (currentPageId === pageId) {
+          switchPage(pages[0]?.id || 'page-1');
+        } else {
+          renderPagesUI();
+          updateMinimap();
+          saveLocalState();
+        }
+      }
+      break;
+    }
+    case 'pageReorder': {
+      const pids = msg.pageIds;
+      if (Array.isArray(pids)) {
+        const pMap = new Map(pages.map(p => [p.id, p]));
+        pages = pids.filter(id => pMap.has(id)).map(id => pMap.get(id));
+        renderPagesUI();
+        saveLocalState();
+      }
       break;
     }
   }
@@ -2451,11 +2581,14 @@ function placeImageAt(url, cx, cy, presetW = null, presetH = null) {
       id, type: 'image', url,
       ratio, x: cx - w / 2, y: cy - h / 2,
       w, h, zIndex: nextZ(),
+      pageId: currentPageId
     };
     elements[id] = el;
     mountElement(el, true);
     select(id, false);
     sendOp('add', { element: el });
+    renderPagesUI();
+    updateMinimap();
   };
 
   if (presetW && presetH) {
@@ -2469,8 +2602,8 @@ function placeImageAt(url, cx, cy, presetW = null, presetH = null) {
 }
 
 function onCanvasDown(e) {
-  // Skip if the click originated on a UI panel (toolbar / modal buttons)
-  if (e.target.closest('.desktop-toolbar, .mobile-toolbar, .modal, .status-indicator')) return;
+  // Skip if the click originated on a UI panel (toolbar / modal buttons / pages bar)
+  if (e.target.closest('.desktop-toolbar, .mobile-toolbar, .modal, .status-indicator, .pages-bar, .mobile-pages-pill')) return;
 
   // Skip the second press of a double-click — it would interfere with dblclick handlers
   if (e.detail >= 2) return;
@@ -2502,7 +2635,7 @@ function onCanvasDown(e) {
     isDrawingFreehand = true;
     const id = 'e' + Math.random().toString(36).slice(2, 11);
     drawFreehandId = id;
-    const el = { id, type: 'draw', color: 'blueprint', zIndex: nextZ(), x: wp.x, y: wp.y, w: 1, h: 1, points: [{x: wp.x, y: wp.y}] };
+    const el = { id, type: 'draw', color: 'blueprint', zIndex: nextZ(), x: wp.x, y: wp.y, w: 1, h: 1, points: [{x: wp.x, y: wp.y}], pageId: currentPageId };
     elements[id] = el;
     mountElement(el, false);
     return;
@@ -3050,7 +3183,7 @@ function createElement(type, wx, wy) {
   if (type === 'image') { showImageModal(); return; }
 
   const id = 'e' + Math.random().toString(36).slice(2, 11);
-  const el = { id, type, color: type === 'note' ? 'yellow' : 'blueprint', zIndex: nextZ() };
+  const el = { id, type, color: type === 'note' ? 'yellow' : 'blueprint', zIndex: nextZ(), pageId: currentPageId };
 
   if (type === 'note') {
     Object.assign(el, { x: wx - 110, y: wy - 110, w: 220, h: 220, text: '' });
@@ -3083,6 +3216,8 @@ function createElement(type, wx, wy) {
   mountElement(el, true);
   select(id, false);
   sendOp('add', { element: el });
+  renderPagesUI();
+  updateMinimap();
 
   // Auto-focus new notes into edit mode
   if (type === 'note') {
@@ -3147,6 +3282,7 @@ function duplicateSelected() {
     idMap.set(id, newId);
     const clone = JSON.parse(JSON.stringify(orig));
     clone.id = newId;
+    clone.pageId = orig.pageId || currentPageId;
     clone.zIndex = nextZ();
     if (clone.type === 'line' || clone.type === 'arrow') {
       clone.x1 += offset; clone.y1 += offset;
@@ -3185,6 +3321,8 @@ function duplicateSelected() {
   newIds.forEach(nid => selectedIds.add(nid));
   Object.values(elements).forEach(el => syncNode(el));
   syncSelectionUI();
+  renderPagesUI();
+  updateMinimap();
   showToast(`Duplicated ${newIds.length} item${newIds.length > 1 ? 's' : ''}`);
 }
 
@@ -4197,12 +4335,15 @@ function placeFileAt(url, fileName, cx, cy, presetW = null, presetH = null) {
   const el = {
     id, type: 'file', url, fileName,
     x: cx - w / 2, y: cy - h / 2,
-    w, h, zIndex: nextZ(), color: 'blueprint'
+    w, h, zIndex: nextZ(), color: 'blueprint',
+    pageId: currentPageId
   };
   elements[id] = el;
   mountElement(el, true);
   select(id, false);
   sendOp('add', { element: el });
+  renderPagesUI();
+  updateMinimap();
 }
 
 function placeFile(url, fileName, w = null, h = null) {
@@ -4230,13 +4371,16 @@ function placeLinkCardAt(data, cx, cy) {
     w,
     h,
     zIndex: nextZ(),
-    color: 'blueprint'
+    color: 'blueprint',
+    pageId: currentPageId
   };
 
   elements[id] = el;
   mountElement(el, true);
   select(id, false);
   sendOp('add', { element: el });
+  renderPagesUI();
+  updateMinimap();
 }
 
 function placeLinkCard(data, w = null, h = null) {
@@ -4280,12 +4424,26 @@ function setupKeyboard() {
 
     if (ignore(e)) return;
 
-    // ── Windows File Manager / Canvas shortcuts ──────────────
-    // Ctrl+A / Cmd+A → Select all
+    // ── Windows File Manager / Canvas / Page shortcuts ──────────────
+    // Alt+Left / Alt+Right → Navigate Endless Pages
+    if (e.altKey && e.key === 'ArrowLeft') {
+      e.preventDefault();
+      goToPrevPage();
+      return;
+    }
+    if (e.altKey && e.key === 'ArrowRight') {
+      e.preventDefault();
+      goToNextPage();
+      return;
+    }
+
+    // Ctrl+A / Cmd+A → Select all on active page
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') {
       e.preventDefault();
-      selectedIds = new Set(Object.keys(elements));
-      Object.values(elements).forEach(el => syncNode(el));
+      selectedIds = new Set(Object.keys(elements).filter(id => elements[id].pageId === currentPageId));
+      selectedIds.forEach(id => {
+        if (elements[id]) syncNode(elements[id]);
+      });
       syncSelectionUI();
       showToast(`Selected all (${selectedIds.size} items)`);
       return;
@@ -4488,7 +4646,7 @@ function updateMinimap() {
   let maxX = vx2;
   let maxY = vy2;
 
-  const allElements = Object.values(elements);
+  const allElements = Object.values(elements).filter(el => el.pageId === currentPageId);
   for (let i = 0; i < allElements.length; i++) {
     const el = allElements[i];
     if (typeof el.x === 'number' && !isNaN(el.x)) {
@@ -4710,6 +4868,414 @@ function setupPreviewMinimap() {
     dragStartPanX = panX;
     dragStartPanY = panY;
     try { previewViewportRect.setPointerCapture(e.pointerId); } catch (_) {}
+  });
+}
+
+// ─────────────────────────────────────────────────────────────
+// ENDLESS NOTE PAGES ENGINE & UI
+// ─────────────────────────────────────────────────────────────
+function switchPage(pageId) {
+  if (pageId === currentPageId) return;
+  const targetPage = pages.find(p => p.id === pageId);
+  if (!targetPage) return;
+
+  // Save current page viewport transform
+  pageViewports.set(currentPageId, { panX, panY, zoom });
+
+  // Clear selection
+  selectedIds.clear();
+  syncSelectionUI();
+
+  // Unmount existing page nodes from DOM
+  for (const node of elementNodes.values()) {
+    node.remove();
+  }
+  elementNodes.clear();
+
+  currentPageId = pageId;
+  saveLocalState();
+
+  // Restore saved viewport or center canvas
+  if (pageViewports.has(pageId)) {
+    const vp = pageViewports.get(pageId);
+    panX = vp.panX;
+    panY = vp.panY;
+    zoom = vp.zoom;
+  } else {
+    const r = viewport.getBoundingClientRect();
+    panX = r.width / 2;
+    panY = r.height / 2;
+    zoom = 1;
+  }
+  applyTransform();
+
+  // Mount elements for newly active page
+  for (const el of Object.values(elements)) {
+    if (el.pageId === currentPageId) {
+      fixBBox(el);
+      mountElement(el, false);
+    }
+  }
+
+  updateMinimap();
+  renderPagesUI();
+  showToast(`Switched to ${targetPage.name}`);
+}
+
+function addPage(name = null) {
+  const newPageId = 'page_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
+  const newPage = {
+    id: newPageId,
+    name: name || `Page ${pages.length + 1}`,
+    createdAt: Date.now()
+  };
+  pages.push(newPage);
+  sendOp('pageAdd', { page: newPage });
+  saveLocalState();
+  switchPage(newPageId);
+  showToast(`Created ${newPage.name}`);
+}
+
+function renamePage(pageId, newName) {
+  const page = pages.find(p => p.id === pageId);
+  if (!page) return;
+  const trimmed = (newName || '').trim();
+  if (!trimmed) return;
+  page.name = trimmed;
+  sendOp('pageUpdate', { page: { id: pageId, name: trimmed } });
+  saveLocalState();
+  renderPagesUI();
+}
+
+function duplicatePage(pageId) {
+  const origPage = pages.find(p => p.id === pageId);
+  if (!origPage) return;
+
+  const newPageId = 'page_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
+  const newPage = {
+    id: newPageId,
+    name: `Copy of ${origPage.name}`,
+    createdAt: Date.now()
+  };
+
+  pages.push(newPage);
+  sendOp('pageAdd', { page: newPage });
+
+  const clonedElements = [];
+  const idMap = new Map();
+
+  for (const el of Object.values(elements)) {
+    if (el.pageId === pageId) {
+      const newElId = 'e' + Math.random().toString(36).slice(2, 11);
+      idMap.set(el.id, newElId);
+      const clone = JSON.parse(JSON.stringify(el));
+      clone.id = newElId;
+      clone.pageId = newPageId;
+      clonedElements.push(clone);
+    }
+  }
+
+  clonedElements.forEach(clone => {
+    if (clone.startBind && idMap.has(clone.startBind)) {
+      clone.startBind = idMap.get(clone.startBind);
+    }
+    if (clone.endBind && idMap.has(clone.endBind)) {
+      clone.endBind = idMap.get(clone.endBind);
+    }
+    elements[clone.id] = clone;
+  });
+
+  if (clonedElements.length > 0) {
+    sendOp('addMultiple', { elements: clonedElements });
+  }
+
+  saveLocalState();
+  switchPage(newPageId);
+  showToast(`Duplicated "${origPage.name}"`);
+}
+
+function deletePage(pageId) {
+  if (pages.length <= 1) {
+    showToast('Cannot delete the only page');
+    return;
+  }
+  const page = pages.find(p => p.id === pageId);
+  if (!page) return;
+
+  if (!confirm(`Delete "${page.name}"? All notes and items on this page will be removed.`)) {
+    return;
+  }
+
+  pages = pages.filter(p => p.id !== pageId);
+  sendOp('pageDelete', { id: pageId });
+
+  // Remove elements belonging to deleted page
+  for (const id in elements) {
+    if (elements[id].pageId === pageId) {
+      dropNode(id);
+      delete elements[id];
+      selectedIds.delete(id);
+    }
+  }
+
+  if (currentPageId === pageId) {
+    switchPage(pages[0].id);
+  } else {
+    renderPagesUI();
+    updateMinimap();
+    saveLocalState();
+  }
+  showToast(`Deleted page "${page.name}"`);
+}
+
+function goToPrevPage() {
+  const idx = pages.findIndex(p => p.id === currentPageId);
+  if (idx > 0) {
+    switchPage(pages[idx - 1].id);
+  }
+}
+
+function goToNextPage() {
+  const idx = pages.findIndex(p => p.id === currentPageId);
+  if (idx >= 0 && idx < pages.length - 1) {
+    switchPage(pages[idx + 1].id);
+  }
+}
+
+function closePagesMenus() {
+  const dropdown = document.getElementById('pages-dropdown-menu');
+  const titleBtn = document.getElementById('pages-title-btn');
+  if (dropdown) dropdown.style.display = 'none';
+  if (titleBtn) titleBtn.classList.remove('open');
+
+  const sheet = document.getElementById('mobile-pages-sheet');
+  if (sheet) sheet.classList.remove('open');
+}
+
+function renderPagesUI() {
+  const currIdx = pages.findIndex(p => p.id === currentPageId);
+  const current = pages[currIdx] || pages[0];
+
+  // Desktop bar elements
+  const titleEl = document.getElementById('pages-current-title');
+  if (titleEl && current) titleEl.textContent = current.name;
+
+  const badgeEl = document.getElementById('pages-count-badge');
+  if (badgeEl) badgeEl.textContent = `${currIdx + 1}/${pages.length}`;
+
+  const prevBtn = document.getElementById('pages-prev-btn');
+  if (prevBtn) prevBtn.disabled = (currIdx <= 0);
+
+  const nextBtn = document.getElementById('pages-next-btn');
+  if (nextBtn) nextBtn.disabled = (currIdx >= pages.length - 1);
+
+  // Mobile pill elements
+  const mName = document.getElementById('mobile-page-name');
+  if (mName && current) mName.textContent = current.name;
+
+  const mBadge = document.getElementById('mobile-page-badge');
+  if (mBadge) mBadge.textContent = `${currIdx + 1}/${pages.length}`;
+
+  // Populate desktop and mobile lists
+  const desktopList = document.getElementById('pages-list-container');
+  const mobileList = document.getElementById('mobile-pages-list-container');
+
+  const buildItems = (container) => {
+    if (!container) return;
+    container.innerHTML = '';
+    pages.forEach((p) => {
+      const count = Object.values(elements).filter(el => el.pageId === p.id).length;
+      const isActive = (p.id === currentPageId);
+
+      const item = document.createElement('div');
+      item.className = `page-item ${isActive ? 'active' : ''}`;
+      item.dataset.pid = p.id;
+
+      item.innerHTML = `
+        <div class="page-item-left">
+          <div class="page-item-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="14" height="14">
+              <polygon points="12 2 2 7 12 12 22 7 12 2"></polygon>
+              <polyline points="2 17 12 22 22 17"></polyline>
+              <polyline points="2 12 12 17 22 12"></polyline>
+            </svg>
+          </div>
+          <span class="page-item-name" title="${p.name}">${p.name}</span>
+          <span class="page-item-count">${count} ${count === 1 ? 'item' : 'items'}</span>
+        </div>
+        <div class="page-item-actions">
+          <button class="page-action-btn rename" title="Rename page (double-click to edit)" aria-label="Rename">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="13" height="13">
+              <path d="M12 20h9"></path>
+              <path d="M16.5 3.5a2.121 2.121 0 013 3L7 19l-4 1 1-4L16.5 3.5z"></path>
+            </svg>
+          </button>
+          <button class="page-action-btn duplicate" title="Duplicate page" aria-label="Duplicate">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="13" height="13">
+              <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+            </svg>
+          </button>
+          ${pages.length > 1 ? `
+          <button class="page-action-btn delete" title="Delete page" aria-label="Delete">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="13" height="13">
+              <polyline points="3 6 5 6 21 6"></polyline>
+              <path d="M19 6l-1 14H6L5 6"></path>
+              <path d="M9 6V4h6v2"></path>
+            </svg>
+          </button>
+          ` : ''}
+        </div>
+      `;
+
+      item.addEventListener('click', (e) => {
+        if (e.target.closest('.page-action-btn') || e.target.closest('.page-item-rename-input')) return;
+        switchPage(p.id);
+        closePagesMenus();
+      });
+
+      const startRename = () => {
+        const nameSpan = item.querySelector('.page-item-name');
+        if (!nameSpan || item.querySelector('.page-item-rename-input')) return;
+        const currentName = p.name;
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.className = 'page-item-rename-input';
+        input.value = currentName;
+        nameSpan.replaceWith(input);
+        input.focus();
+        input.select();
+
+        let committed = false;
+        const finish = () => {
+          if (committed) return;
+          committed = true;
+          const val = input.value.trim();
+          if (val && val !== currentName) {
+            renamePage(p.id, val);
+          } else {
+            renderPagesUI();
+          }
+        };
+
+        input.addEventListener('blur', finish);
+        input.addEventListener('keydown', (ev) => {
+          if (ev.key === 'Enter') {
+            ev.preventDefault();
+            finish();
+          } else if (ev.key === 'Escape') {
+            committed = true;
+            renderPagesUI();
+          }
+        });
+      };
+
+      const renameBtn = item.querySelector('.page-action-btn.rename');
+      if (renameBtn) renameBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        startRename();
+      });
+
+      item.addEventListener('dblclick', (e) => {
+        e.stopPropagation();
+        startRename();
+      });
+
+      const dupBtn = item.querySelector('.page-action-btn.duplicate');
+      if (dupBtn) dupBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        duplicatePage(p.id);
+        closePagesMenus();
+      });
+
+      const delBtn = item.querySelector('.page-action-btn.delete');
+      if (delBtn) delBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        deletePage(p.id);
+      });
+
+      container.appendChild(item);
+    });
+  };
+
+  buildItems(desktopList);
+  buildItems(mobileList);
+}
+
+function setupPagesUI() {
+  const titleBtn = document.getElementById('pages-title-btn');
+  const menuBtn = document.getElementById('pages-menu-btn');
+  const dropdown = document.getElementById('pages-dropdown-menu');
+
+  const toggleDropdown = (e) => {
+    e.stopPropagation();
+    if (!dropdown) return;
+    const isHidden = dropdown.style.display === 'none' || !dropdown.style.display;
+    if (isHidden) {
+      renderPagesUI();
+      dropdown.style.display = 'block';
+      titleBtn?.classList.add('open');
+    } else {
+      dropdown.style.display = 'none';
+      titleBtn?.classList.remove('open');
+    }
+  };
+
+  titleBtn?.addEventListener('click', toggleDropdown);
+  menuBtn?.addEventListener('click', toggleDropdown);
+
+  document.getElementById('pages-prev-btn')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    goToPrevPage();
+  });
+
+  document.getElementById('pages-next-btn')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    goToNextPage();
+  });
+
+  document.getElementById('pages-quick-add-btn')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    addPage();
+  });
+
+  document.getElementById('pages-dropdown-add-btn')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    addPage();
+    closePagesMenus();
+  });
+
+  // Close dropdown on click outside
+  document.addEventListener('pointerdown', (e) => {
+    if (!e.target.closest('#pages-bar')) {
+      if (dropdown && dropdown.style.display !== 'none') {
+        dropdown.style.display = 'none';
+        titleBtn?.classList.remove('open');
+      }
+    }
+  });
+
+  // Mobile sheet elements
+  const mobilePill = document.getElementById('mobile-pages-btn');
+  const mobileSheet = document.getElementById('mobile-pages-sheet');
+  const mobileClose = document.getElementById('mobile-pages-close');
+  const mobileBackdrop = document.getElementById('mobile-pages-backdrop');
+  const mobileAddBtn = document.getElementById('mobile-add-page-btn');
+
+  mobilePill?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    renderPagesUI();
+    mobileSheet?.classList.add('open');
+  });
+
+  const closeSheet = () => mobileSheet?.classList.remove('open');
+  mobileClose?.addEventListener('click', closeSheet);
+  mobileBackdrop?.addEventListener('click', closeSheet);
+
+  mobileAddBtn?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    addPage();
+    closeSheet();
   });
 }
 

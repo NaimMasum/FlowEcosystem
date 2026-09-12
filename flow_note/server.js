@@ -10,8 +10,11 @@ const PORT = process.env.PORT || 3941;
 const DATA_DIR = path.join(__dirname, 'data');
 const DATA_FILE = path.join(DATA_DIR, 'board.json');
 
-// In-memory board state: Map of elementId -> elementObject
-let boardState = {};
+// In-memory board state: { pages: [...], elements: { [id]: elementObject } }
+let boardState = {
+  pages: [{ id: 'page-1', name: 'Page 1', createdAt: Date.now() }],
+  elements: {}
+};
 
 // Central Timer Records Database
 const TIMER_RECORDS_FILE = path.join(DATA_DIR, 'timer_records.json');
@@ -25,13 +28,35 @@ if (!fs.existsSync(DATA_DIR)) {
 if (fs.existsSync(DATA_FILE)) {
   try {
     const data = fs.readFileSync(DATA_FILE, 'utf8');
-    boardState = JSON.parse(data || '{}');
+    const parsed = JSON.parse(data || '{}');
+    if (parsed && Array.isArray(parsed.pages) && parsed.pages.length > 0 && parsed.elements) {
+      boardState = {
+        pages: parsed.pages,
+        elements: parsed.elements || {}
+      };
+    } else if (parsed && typeof parsed === 'object') {
+      // Legacy format: parsed was flat { [elementId]: elementObject }
+      const initialPageId = 'page-1';
+      const legacyElements = {};
+      for (const [id, el] of Object.entries(parsed)) {
+        if (el && typeof el === 'object') {
+          legacyElements[id] = { ...el, pageId: el.pageId || initialPageId };
+        }
+      }
+      boardState = {
+        pages: [{ id: initialPageId, name: 'Page 1', createdAt: Date.now() }],
+        elements: legacyElements
+      };
+    }
   } catch (err) {
     console.error('Error reading board.json, starting fresh:', err);
-    boardState = {};
+    boardState = {
+      pages: [{ id: 'page-1', name: 'Page 1', createdAt: Date.now() }],
+      elements: {}
+    };
   }
 } else {
-  fs.writeFileSync(DATA_FILE, JSON.stringify({}, null, 2), 'utf8');
+  fs.writeFileSync(DATA_FILE, JSON.stringify(boardState, null, 2), 'utf8');
 }
 
 if (fs.existsSync(TIMER_RECORDS_FILE)) {
@@ -406,7 +431,8 @@ wss.on('connection', (ws) => {
   // Send initial board state to the new client
   ws.send(JSON.stringify({
     type: 'init',
-    elements: boardState
+    pages: boardState.pages,
+    elements: boardState.elements
   }));
 
   // Setup ping-pong heartbeat
@@ -429,26 +455,45 @@ wss.on('connection', (ws) => {
       const data = JSON.parse(messageString);
       
       switch (data.type) {
-          case 'ping': {
-            if (ws.readyState === WebSocket.OPEN) {
-              ws.send(JSON.stringify({ type: 'pong' }));
-            }
-            break;
+        case 'ping': {
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'pong' }));
           }
-          case 'add': {
+          break;
+        }
+        case 'add': {
           const { element } = data;
           if (element && element.id) {
-            boardState[element.id] = element;
+            if (!element.pageId) {
+              element.pageId = boardState.pages[0]?.id || 'page-1';
+            }
+            boardState.elements[element.id] = element;
             queueSave();
             broadcast(ws, { type: 'add', element });
+          }
+          break;
+        }
+        case 'addMultiple': {
+          const { elements } = data;
+          if (Array.isArray(elements)) {
+            elements.forEach(element => {
+              if (element && element.id) {
+                if (!element.pageId) {
+                  element.pageId = boardState.pages[0]?.id || 'page-1';
+                }
+                boardState.elements[element.id] = element;
+              }
+            });
+            queueSave();
+            broadcast(ws, { type: 'addMultiple', elements });
           }
           break;
         }
         case 'update': {
           const { element } = data;
           if (element && element.id) {
-            boardState[element.id] = {
-              ...(boardState[element.id] || {}),
+            boardState.elements[element.id] = {
+              ...(boardState.elements[element.id] || {}),
               ...element
             };
             queueSave();
@@ -459,11 +504,11 @@ wss.on('connection', (ws) => {
         case 'delete': {
           const { id } = data;
           if (id) {
-            const el = boardState[id];
+            const el = boardState.elements[id];
             if (el && el.type === 'timer') {
               archiveClosedTimer(el);
             }
-            delete boardState[id];
+            delete boardState.elements[id];
             queueSave();
             broadcast(ws, { type: 'delete', id });
           }
@@ -480,14 +525,81 @@ wss.on('connection', (ws) => {
           const { ids } = data;
           if (Array.isArray(ids)) {
             ids.forEach(id => {
-              const el = boardState[id];
+              const el = boardState.elements[id];
               if (el && el.type === 'timer') {
                 archiveClosedTimer(el);
               }
-              delete boardState[id];
+              delete boardState.elements[id];
             });
             queueSave();
             broadcast(ws, { type: 'deleteMultiple', ids });
+          }
+          break;
+        }
+        case 'pageAdd': {
+          const { page } = data;
+          if (page && page.id) {
+            const exists = boardState.pages.some(p => p.id === page.id);
+            if (!exists) {
+              boardState.pages.push(page);
+              queueSave();
+              broadcast(ws, { type: 'pageAdd', page });
+            }
+          }
+          break;
+        }
+        case 'pageUpdate': {
+          const { page } = data;
+          if (page && page.id) {
+            const idx = boardState.pages.findIndex(p => p.id === page.id);
+            if (idx >= 0) {
+              boardState.pages[idx] = {
+                ...boardState.pages[idx],
+                ...page
+              };
+              queueSave();
+              broadcast(ws, { type: 'pageUpdate', page: boardState.pages[idx] });
+            }
+          }
+          break;
+        }
+        case 'pageDelete': {
+          const { id } = data;
+          if (id && boardState.pages.length > 1) {
+            const deletedElementIds = [];
+            for (const elId in boardState.elements) {
+              const el = boardState.elements[elId];
+              if (el && el.pageId === id) {
+                if (el.type === 'timer') {
+                  archiveClosedTimer(el);
+                }
+                delete boardState.elements[elId];
+                deletedElementIds.push(elId);
+              }
+            }
+            boardState.pages = boardState.pages.filter(p => p.id !== id);
+            queueSave();
+            broadcast(ws, { type: 'pageDelete', id, deletedElementIds });
+          }
+          break;
+        }
+        case 'pageReorder': {
+          const { pageIds } = data;
+          if (Array.isArray(pageIds)) {
+            const pageMap = new Map(boardState.pages.map(p => [p.id, p]));
+            const reordered = [];
+            pageIds.forEach(pid => {
+              if (pageMap.has(pid)) {
+                reordered.push(pageMap.get(pid));
+                pageMap.delete(pid);
+              }
+            });
+            for (const rem of pageMap.values()) {
+              reordered.push(rem);
+            }
+            boardState.pages = reordered;
+            queueSave();
+            broadcast(ws, { type: 'pageReorder', pageIds: boardState.pages.map(p => p.id) });
           }
           break;
         }
