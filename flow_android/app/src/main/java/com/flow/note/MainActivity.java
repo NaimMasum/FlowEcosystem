@@ -59,8 +59,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 public class MainActivity extends Activity {
     private WebView mWebView;
-    private final int[] NOTE_PORTS = new int[]{ 3941, 3939 };
-    private int mServerPort = 3941;
+    private final int[] NOTE_PORTS = new int[]{ 3942, 3941, 3939 };
+    private int mServerPort = 3942;
     private final int PDF_PORT = 4040;
     private AtomicBoolean found = new AtomicBoolean(false);
     private ValueCallback<Uri[]> mUploadMessage;

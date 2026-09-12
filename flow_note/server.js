@@ -6,8 +6,28 @@ const fs = require('fs');
 const os = require('os');
 const crypto = require('crypto');
 
-const PORT = process.env.PORT || 3941;
-const DATA_DIR = path.join(__dirname, 'data');
+const PORT = process.env.PORT || 3942;
+
+function resolveDataDir() {
+  if (process.env.FLOW_DATA_DIR) return process.env.FLOW_DATA_DIR;
+  const localData = path.join(process.cwd(), 'data');
+  if (fs.existsSync(localData)) return localData;
+  const dirData = path.join(__dirname, 'data');
+  if (fs.existsSync(dirData)) return dirData;
+  return localData;
+}
+
+function resolvePublicDir() {
+  if (process.env.FLOW_PUBLIC_DIR) return process.env.FLOW_PUBLIC_DIR;
+  const localPublic = path.join(process.cwd(), 'public');
+  if (fs.existsSync(localPublic)) return localPublic;
+  const dirPublic = path.join(__dirname, 'public');
+  if (fs.existsSync(dirPublic)) return dirPublic;
+  return localPublic;
+}
+
+const DATA_DIR = resolveDataDir();
+const PUBLIC_DIR = resolvePublicDir();
 const DATA_FILE = path.join(DATA_DIR, 'board.json');
 
 // In-memory board state: Map of elementId -> elementObject
@@ -159,7 +179,7 @@ if (!fs.existsSync(UPLOADS_DIR)) {
 
 const app = express();
 app.use(express.json({ limit: '10mb' }));
-app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.static(PUBLIC_DIR));
 
 // ── Central Timer Records Database API ────────────────────────
 app.get('/api/timer-records', (req, res) => {
