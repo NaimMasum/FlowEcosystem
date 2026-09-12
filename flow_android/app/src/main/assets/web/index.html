@@ -133,6 +133,81 @@
 
     </div><!-- /desktop-toolbar -->
 
+    <!-- ===== PAGES BAR (DESKTOP) ===== -->
+    <div id="pages-bar" class="pages-bar">
+      <button class="pages-icon-btn" id="pages-menu-btn" title="All Pages / Page Manager" aria-label="Page Manager">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="16" height="16">
+          <polygon points="12 2 2 7 12 12 22 7 12 2"></polygon>
+          <polyline points="2 17 12 22 22 17"></polyline>
+          <polyline points="2 12 12 17 22 12"></polyline>
+        </svg>
+        <span class="pages-badge" id="pages-count-badge">1</span>
+      </button>
+
+      <div class="pages-bar-divider"></div>
+
+      <button class="pages-nav-btn" id="pages-prev-btn" title="Previous Page (Alt+Left)" aria-label="Previous Page">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" width="14" height="14">
+          <polyline points="15 18 9 12 15 6"></polyline>
+        </svg>
+      </button>
+
+      <div class="pages-dropdown-anchor">
+        <button class="pages-title-btn" id="pages-title-btn" title="Switch or manage pages">
+          <span class="pages-title-text" id="pages-current-title">Page 1</span>
+          <svg class="pages-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="13" height="13">
+            <polyline points="6 9 12 15 18 9"></polyline>
+          </svg>
+        </button>
+
+        <!-- Desktop Pages Dropdown Menu -->
+        <div class="pages-dropdown-menu" id="pages-dropdown-menu" style="display:none;">
+          <div class="pages-menu-header">
+            <span>Endless Pages</span>
+            <button class="pages-menu-add-btn" id="pages-dropdown-add-btn" title="Add Page">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" width="13" height="13">
+                <line x1="12" y1="5" x2="12" y2="19"></line>
+                <line x1="5" y1="12" x2="19" y2="12"></line>
+              </svg>
+              <span>New Page</span>
+            </button>
+          </div>
+          <div class="pages-list" id="pages-list-container">
+            <!-- Populated by JS -->
+          </div>
+        </div>
+      </div>
+
+      <button class="pages-nav-btn" id="pages-next-btn" title="Next Page (Alt+Right)" aria-label="Next Page">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" width="14" height="14">
+          <polyline points="9 18 15 12 9 6"></polyline>
+        </svg>
+      </button>
+
+      <div class="pages-bar-divider"></div>
+
+      <button class="pages-quick-add-btn" id="pages-quick-add-btn" title="Create new endless page" aria-label="New Page">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" width="14" height="14">
+          <line x1="12" y1="5" x2="12" y2="19"></line>
+          <line x1="5" y1="12" x2="19" y2="12"></line>
+        </svg>
+      </button>
+    </div>
+
+    <!-- ===== MOBILE PAGES PILL ===== -->
+    <button class="mobile-pages-pill" id="mobile-pages-btn" aria-label="Open Pages">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="14" height="14">
+        <polygon points="12 2 2 7 12 12 22 7 12 2"></polygon>
+        <polyline points="2 17 12 22 22 17"></polyline>
+        <polyline points="2 12 12 17 22 12"></polyline>
+      </svg>
+      <span class="mobile-page-title-text" id="mobile-page-name">Page 1</span>
+      <span class="mobile-page-badge" id="mobile-page-badge">1/1</span>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" width="12" height="12">
+        <polyline points="6 9 12 15 18 9"></polyline>
+      </svg>
+    </button>
+
     <!-- ===== MOBILE TOOLBAR ===== -->
     <div id="mobile-toolbar" class="mobile-toolbar">
 
@@ -423,6 +498,47 @@
         <div class="modal-footer records-modal-footer">
           <button class="modal-btn danger" id="records-clear-all-btn">Clear Database</button>
           <button class="modal-btn primary" id="records-done-btn">Done</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== MOBILE PAGES SHEET ===== -->
+    <div id="mobile-pages-sheet" class="modal" role="dialog" aria-modal="true" aria-labelledby="mobile-pages-title">
+      <div class="modal-backdrop" id="mobile-pages-backdrop"></div>
+      <div class="modal-content mobile-pages-content">
+        <div class="modal-header">
+          <div class="modal-title-wrap">
+            <div class="modal-title-icon">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="20" height="20">
+                <polygon points="12 2 2 7 12 12 22 7 12 2"></polygon>
+                <polyline points="2 17 12 22 22 17"></polyline>
+                <polyline points="2 12 12 17 22 12"></polyline>
+              </svg>
+            </div>
+            <div>
+              <h2 class="modal-title" id="mobile-pages-title">Endless Note Pages</h2>
+              <div class="modal-subtitle">Switch, add, and manage your endless canvases</div>
+            </div>
+          </div>
+          <button class="modal-close" id="mobile-pages-close" aria-label="Close">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" width="18" height="18"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+        </div>
+
+        <div class="mobile-pages-body">
+          <div class="pages-list" id="mobile-pages-list-container">
+            <!-- Populated by JS -->
+          </div>
+        </div>
+
+        <div class="modal-footer mobile-pages-footer">
+          <button class="modal-btn primary" id="mobile-add-page-btn" style="width: 100%;">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" width="16" height="16">
+              <line x1="12" y1="5" x2="12" y2="19"></line>
+              <line x1="5" y1="12" x2="19" y2="12"></line>
+            </svg>
+            Create New Endless Page
+          </button>
         </div>
       </div>
     </div>
