@@ -13,6 +13,7 @@ namespace FlowServer
         public const string DisplayName = FlowWindowsService.DefaultDisplayName;
         public const string Description = FlowWindowsService.DefaultDescription;
         private const string RunRegistryKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
+        public const string WebOpenerKeyName = "FlowServer_WebOpener";
 
         public static bool IsAdministrator()
         {
@@ -90,7 +91,38 @@ namespace FlowServer
             Console.WriteLine($"[✓] Service '{ServiceName}' successfully installed with Automatic startup!");
             Console.ResetColor();
 
-            // 4. Start the service
+            // 4. Register Webpage Auto-Opener on System Boot / User Logon
+            try
+            {
+                string openerCmd = string.IsNullOrEmpty(launcherArgs)
+                    ? $"\"{launcherExe}\" --open-browser --port {port}"
+                    : $"\"{launcherExe}\" {launcherArgs} --open-browser --port {port}";
+
+                using var runKey = Registry.LocalMachine.OpenSubKey(RunRegistryKey, true) 
+                                   ?? Registry.CurrentUser.OpenSubKey(RunRegistryKey, true);
+                if (runKey != null)
+                {
+                    runKey.SetValue(WebOpenerKeyName, openerCmd);
+                    Console.ForegroundColor = ConsoleColor.Green;
+                    Console.WriteLine($"[✓] Webpage auto-open configured: browser will automatically open http://localhost:{port} on boot!");
+                    Console.ResetColor();
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[*] Note: Falling back to user logon web opener: {ex.Message}");
+                try
+                {
+                    using var cuKey = Registry.CurrentUser.OpenSubKey(RunRegistryKey, true);
+                    string openerCmd = string.IsNullOrEmpty(launcherArgs)
+                        ? $"\"{launcherExe}\" --open-browser --port {port}"
+                        : $"\"{launcherExe}\" {launcherArgs} --open-browser --port {port}";
+                    cuKey?.SetValue(WebOpenerKeyName, openerCmd);
+                }
+                catch {}
+            }
+
+            // 5. Start the service
             Console.WriteLine($"[*] Starting service '{ServiceName}'...");
             StartService();
 
@@ -107,6 +139,20 @@ namespace FlowServer
                 Console.ResetColor();
                 return false;
             }
+
+            // Remove WebOpener
+            try
+            {
+                using var lmKey = Registry.LocalMachine.OpenSubKey(RunRegistryKey, true);
+                lmKey?.DeleteValue(WebOpenerKeyName, false);
+            }
+            catch {}
+            try
+            {
+                using var cuKey = Registry.CurrentUser.OpenSubKey(RunRegistryKey, true);
+                cuKey?.DeleteValue(WebOpenerKeyName, false);
+            }
+            catch {}
 
             Console.WriteLine($"[*] Stopping service '{ServiceName}' if running...");
             StopService();
@@ -211,6 +257,28 @@ namespace FlowServer
             catch
             {
                 Console.WriteLine($" User Login Startup: Unknown");
+            }
+
+            // 3. Check Webpage Auto-Opener
+            try
+            {
+                using var lm = Registry.LocalMachine.OpenSubKey(RunRegistryKey, false);
+                using var cu = Registry.CurrentUser.OpenSubKey(RunRegistryKey, false);
+                var openerVal = (lm?.GetValue(WebOpenerKeyName) ?? cu?.GetValue(WebOpenerKeyName)) as string;
+                if (!string.IsNullOrEmpty(openerVal))
+                {
+                    Console.ForegroundColor = ConsoleColor.Green;
+                    Console.WriteLine($" Webpage Auto-Open:  ENABLED (opens browser on boot/login)");
+                    Console.ResetColor();
+                }
+                else
+                {
+                    Console.WriteLine($" Webpage Auto-Open:  Disabled");
+                }
+            }
+            catch
+            {
+                Console.WriteLine($" Webpage Auto-Open:  Unknown");
             }
 
             Console.WriteLine("=================================================");

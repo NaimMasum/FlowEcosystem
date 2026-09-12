@@ -26,6 +26,8 @@ namespace FlowServer
             bool isStatus = false;
             bool isInstallStartup = false;
             bool isUninstallStartup = false;
+            bool isOpenBrowser = false;
+            bool isOpenImmediately = false;
             bool isHelp = false;
 
             for (int i = 0; i < args.Length; i++)
@@ -40,6 +42,8 @@ namespace FlowServer
                 else if (arg == "--status") isStatus = true;
                 else if (arg == "--install-startup") isInstallStartup = true;
                 else if (arg == "--uninstall-startup") isUninstallStartup = true;
+                else if (arg == "--open-browser" || arg == "--open-page") isOpenBrowser = true;
+                else if (arg == "--open" || arg == "-o") isOpenImmediately = true;
                 else if (arg == "--help" || arg == "-h" || arg == "/?") isHelp = true;
                 else if (arg == "--port" && i + 1 < args.Length && int.TryParse(args[i + 1], out int p))
                 {
@@ -104,6 +108,10 @@ namespace FlowServer
             {
                 return ServiceManager.UninstallUserStartup() ? 0 : 1;
             }
+            if (isOpenBrowser)
+            {
+                return OpenBrowserWhenReady(port, 30) ? 0 : 1;
+            }
 
             var serverHost = new ServerHost
             {
@@ -125,6 +133,13 @@ namespace FlowServer
             {
                 serverHost.IsHeadless = true;
                 serverHost.Start();
+
+                // Automatically open browser on boot/login
+                new Thread(() =>
+                {
+                    OpenBrowserWhenReady(port, 30);
+                }) { IsBackground = true }.Start();
+
                 var exitEvent = new ManualResetEvent(false);
                 AppDomain.CurrentDomain.ProcessExit += (s, e) =>
                 {
@@ -136,10 +151,10 @@ namespace FlowServer
             }
 
             // Case C: Interactive Console Mode
-            return RunInteractive(serverHost);
+            return RunInteractive(serverHost, isOpenImmediately);
         }
 
-        static int RunInteractive(ServerHost host)
+        static int RunInteractive(ServerHost host, bool openBrowser = false)
         {
             Console.OutputEncoding = System.Text.Encoding.UTF8;
             Console.Clear();
@@ -181,9 +196,10 @@ namespace FlowServer
 
             Console.WriteLine($" [*] mDNS Discovery:  Flow Whiteboard ({host.Port}) active");
             Console.WriteLine("=================================================================");
-            Console.WriteLine(" [Startup / Service Commands]");
-            Console.WriteLine("   FlowServer.exe --install-service   (Auto-run on Windows boot)");
-            Console.WriteLine("   FlowServer.exe --install-startup   (Auto-run on User login)");
+            Console.WriteLine(" [Controls & Shortcuts]");
+            Console.WriteLine("   Press 'O'                          Open whiteboard in default browser");
+            Console.WriteLine("   FlowServer.exe --install-service   (Auto-run & auto-open on Windows boot)");
+            Console.WriteLine("   FlowServer.exe --install-startup   (Auto-run & auto-open on User login)");
             Console.WriteLine("   FlowServer.exe --status            (Check service status)");
             Console.WriteLine("   FlowServer.exe --uninstall         (Remove service)");
             Console.WriteLine("=================================================================");
@@ -197,6 +213,34 @@ namespace FlowServer
             };
 
             var shutdownEvent = new ManualResetEvent(false);
+
+            if (openBrowser)
+            {
+                new Thread(() => OpenBrowserWhenReady(host.Port, 20)) { IsBackground = true }.Start();
+            }
+
+            // Keyboard shortcut listener: Press 'O' to open browser
+            new Thread(() =>
+            {
+                while (!shutdownEvent.WaitOne(200))
+                {
+                    try
+                    {
+                        if (Console.KeyAvailable)
+                        {
+                            var key = Console.ReadKey(true);
+                            if (key.Key == ConsoleKey.O)
+                            {
+                                Console.ForegroundColor = ConsoleColor.Cyan;
+                                Console.WriteLine("\n[*] Opening Flow Whiteboard in default browser...");
+                                Console.ResetColor();
+                                OpenBrowserWhenReady(host.Port, 3);
+                            }
+                        }
+                    }
+                    catch {}
+                }
+            }) { IsBackground = true }.Start();
 
             Console.CancelKeyPress += (s, e) =>
             {
@@ -233,6 +277,57 @@ namespace FlowServer
             return 0;
         }
 
+        public static bool OpenBrowserWhenReady(int port, int timeoutSec = 30)
+        {
+            string url = $"http://localhost:{port}/";
+            DateTime deadline = DateTime.Now.AddSeconds(timeoutSec);
+            using var client = new System.Net.Http.HttpClient { Timeout = TimeSpan.FromSeconds(1) };
+
+            while (DateTime.Now < deadline)
+            {
+                try
+                {
+                    var response = client.GetAsync(url).GetAwaiter().GetResult();
+                    if (response.IsSuccessStatusCode)
+                    {
+                        break;
+                    }
+                }
+                catch
+                {
+                    // Server not ready yet
+                }
+                Thread.Sleep(500);
+            }
+
+            try
+            {
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = url,
+                    UseShellExecute = true
+                });
+                return true;
+            }
+            catch
+            {
+                try
+                {
+                    Process.Start(new ProcessStartInfo
+                    {
+                        FileName = "explorer.exe",
+                        Arguments = $"\"{url}\"",
+                        UseShellExecute = false
+                    });
+                    return true;
+                }
+                catch
+                {
+                    return false;
+                }
+            }
+        }
+
         static void PrintHelp()
         {
             Console.WriteLine(@"
@@ -242,20 +337,22 @@ Usage: FlowServer.exe [options]
 Modes:
   FlowServer.exe                     Run server interactively in console
   FlowServer.exe --service           Run as Windows Service (invoked by Windows SCM)
-  FlowServer.exe --startup           Run silently in background (invoked by User Startup)
+  FlowServer.exe --startup           Run silently in background and auto-open webpage (User Startup)
+  FlowServer.exe --open-browser      Wait for server and open webpage in default browser
 
 Service Management (Requires Administrator):
-  --install, --install-service       Install and register Windows Service to start at boot
-  --uninstall, --uninstall-service   Stop and remove the Windows Service
+  --install, --install-service       Install Windows Service and configure webpage auto-open on boot
+  --uninstall, --uninstall-service   Stop and remove the Windows Service and auto-opener
   --start                            Start the Windows Service
   --stop                             Stop the Windows Service
   --status                           Check status of the Windows Service and Startup registry
 
 User Startup Management (No Administrator required):
-  --install-startup                  Register server to start silently at user login
+  --install-startup                  Register server and browser to start silently at user login
   --uninstall-startup                Remove from user login startup
 
 Configuration Options:
+  --open, -o                         Launch console server and open browser once online
   --port <number>                    Whiteboard HTTP/WS port (default: 3942)
   --pdf-port <number>                PDF Annotator port (default: 4042)
   --data <path>                      Custom data directory path for board persistence

@@ -58,7 +58,6 @@ echo [*] Compiling single-file native Windows executable (win-x64)...
 dotnet publish FlowServer\FlowServer.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o dist\
 if %errorlevel% neq 0 (
     echo [!] dotnet publish failed.
-    pause
     exit /b 1
 )
 
