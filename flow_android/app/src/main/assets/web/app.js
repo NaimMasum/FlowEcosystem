@@ -148,11 +148,57 @@ function init() {
     }
   } catch(e){}
 
-  // Centre the canvas initially (world 0,0 → viewport centre)
-  const r = viewport.getBoundingClientRect();
-  panX = r.width  / 2;
-  panY = r.height / 2;
-  applyTransform();
+  // Restore saved viewports (per-page and last global viewport)
+  let restoredViewport = false;
+  try {
+    let rawPageVps = localStorage.getItem('flow_page_viewports');
+    let rawLastVp = localStorage.getItem('flow_last_viewport');
+
+    if ((!rawPageVps || rawPageVps === '{}') && window.AndroidBridge && typeof window.AndroidBridge.getViewport === 'function') {
+      const bridgeVpStr = window.AndroidBridge.getViewport();
+      if (bridgeVpStr && bridgeVpStr !== '{}') {
+        const parsedBridgeVp = JSON.parse(bridgeVpStr);
+        if (parsedBridgeVp.pageViewports) rawPageVps = JSON.stringify(parsedBridgeVp.pageViewports);
+        if (parsedBridgeVp.lastViewport) rawLastVp = JSON.stringify(parsedBridgeVp.lastViewport);
+      }
+    }
+
+    if (rawPageVps) {
+      const parsedVps = JSON.parse(rawPageVps);
+      for (const [pid, vp] of Object.entries(parsedVps)) {
+        if (vp && typeof vp.panX === 'number' && typeof vp.panY === 'number' && typeof vp.zoom === 'number') {
+          pageViewports.set(pid, vp);
+        }
+      }
+    }
+
+    let targetVp = pageViewports.get(currentPageId);
+    if (!targetVp && rawLastVp) {
+      const lastVp = JSON.parse(rawLastVp);
+      if (lastVp && typeof lastVp.panX === 'number' && typeof lastVp.panY === 'number' && typeof lastVp.zoom === 'number') {
+        targetVp = lastVp;
+      }
+    }
+
+    if (targetVp) {
+      panX = targetVp.panX;
+      panY = targetVp.panY;
+      zoom = targetVp.zoom;
+      hasCustomViewport = true;
+      restoredViewport = true;
+    }
+  } catch (e) {
+    console.warn('Error restoring viewport state:', e);
+  }
+
+  // Centre the canvas initially only if no saved viewport exists
+  if (!restoredViewport) {
+    const r = viewport.getBoundingClientRect();
+    panX = r.width  / 2;
+    panY = r.height / 2;
+    zoom = 1;
+  }
+  applyTransform(true);
 
   connectWebSocket();
   setupCanvasPointers();
@@ -168,7 +214,13 @@ function init() {
     if (ws) ws.close();
   });
 
-  window.addEventListener('resize', applyTransform);
+  window.addEventListener('resize', () => applyTransform(true));
+  window.addEventListener('beforeunload', () => scheduleSyncViewport(true));
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') {
+      scheduleSyncViewport(true);
+    }
+  });
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -181,10 +233,21 @@ function saveLocalState() {
     localStorage.setItem('flow_note_pages', JSON.stringify(pages));
     localStorage.setItem('flow_active_page', currentPageId);
     localStorage.setItem('flow_note_state', JSON.stringify(elements));
+    if (currentPageId) {
+      pageViewports.set(currentPageId, { panX, panY, zoom });
+      localStorage.setItem('flow_last_viewport', JSON.stringify({ pageId: currentPageId, panX, panY, zoom }));
+      localStorage.setItem('flow_page_viewports', JSON.stringify(Object.fromEntries(pageViewports)));
+    }
   } catch (e) {}
   try {
     if (window.AndroidBridge && typeof window.AndroidBridge.saveBoardState === 'function') {
       window.AndroidBridge.saveBoardState(JSON.stringify(elements));
+    }
+    if (window.AndroidBridge && typeof window.AndroidBridge.saveViewport === 'function' && currentPageId) {
+      window.AndroidBridge.saveViewport(JSON.stringify({
+        lastViewport: { pageId: currentPageId, panX, panY, zoom },
+        pageViewports: Object.fromEntries(pageViewports)
+      }));
     }
   } catch (e) {}
 }
@@ -214,7 +277,8 @@ function flushOfflineQueue() {
 let pingTimer = null;
 
 function resolveServerHost() {
-  if (location.host && !location.host.startsWith('localhost') && !location.host.startsWith('127.0.0.1')) {
+  if (window.FlowServerHost) return window.FlowServerHost;
+  if (location.protocol !== 'file:' && location.host) {
     try { localStorage.setItem('flow_server_host', location.host); } catch (e) {}
     return location.host;
   }
@@ -228,7 +292,15 @@ function resolveServerHost() {
     const savedHost = localStorage.getItem('flow_server_host');
     if (savedHost) return savedHost;
   } catch (e) {}
-  return location.host || 'localhost:3939';
+  return 'localhost:3939';
+}
+
+function getUploadUrl() {
+  if (location.protocol === 'file:') {
+    const host = resolveServerHost();
+    return host ? `http://${host}/upload` : '/upload';
+  }
+  return '/upload';
 }
 
 function connectWebSocket() {
@@ -247,6 +319,15 @@ function connectWebSocket() {
       setStatus('connected');
       reconnectDelay = 1000;
       flushOfflineQueue();
+      if (hasCustomViewport && currentPageId) {
+        ws.send(JSON.stringify({
+          type: 'viewport',
+          pageId: currentPageId,
+          panX,
+          panY,
+          zoom
+        }));
+      }
       if (pingTimer) clearInterval(pingTimer);
       pingTimer = setInterval(() => {
         if (ws && ws.readyState === WebSocket.OPEN) {
@@ -367,6 +448,22 @@ function handleServerMsg(msg) {
           }
         }
       }
+      if (msg.viewports && typeof msg.viewports === 'object') {
+        for (const [pid, vp] of Object.entries(msg.viewports)) {
+          if (!pageViewports.has(pid) && vp) {
+            pageViewports.set(pid, vp);
+          }
+        }
+      }
+      if (!hasCustomViewport) {
+        const serverVp = (msg.viewports && msg.viewports[currentPageId]) || msg.lastViewport;
+        if (serverVp && typeof serverVp.panX === 'number' && typeof serverVp.panY === 'number' && typeof serverVp.zoom === 'number') {
+          panX = serverVp.panX;
+          panY = serverVp.panY;
+          zoom = serverVp.zoom;
+          applyTransform(true);
+        }
+      }
       saveLocalState();
       renderPagesUI();
       updateMinimap();
@@ -465,6 +562,7 @@ function handleServerMsg(msg) {
     case 'pageDelete': {
       const pageId = msg.id;
       if (pageId) {
+        pageViewports.delete(pageId);
         pages = pages.filter(x => x.id !== pageId);
         for (const elId in elements) {
           if (elements[elId].pageId === pageId) {
@@ -500,7 +598,51 @@ function handleServerMsg(msg) {
 // CANVAS TRANSFORM
 // ─────────────────────────────────────────────────────────────
 let lastAppliedZoom = zoom;
-function applyTransform() {
+let hasCustomViewport = false;
+let viewportSyncTimer = null;
+
+function scheduleSyncViewport(immediate = false) {
+  if (viewportSyncTimer) clearTimeout(viewportSyncTimer);
+  const sync = () => {
+    hasCustomViewport = true;
+    if (currentPageId) {
+      pageViewports.set(currentPageId, { panX, panY, zoom });
+    }
+    const vpData = { pageId: currentPageId, panX, panY, zoom };
+    const allViewportsObj = Object.fromEntries(pageViewports);
+    try {
+      localStorage.setItem('flow_last_viewport', JSON.stringify(vpData));
+      localStorage.setItem('flow_page_viewports', JSON.stringify(allViewportsObj));
+    } catch (e) {}
+
+    try {
+      if (window.AndroidBridge && typeof window.AndroidBridge.saveViewport === 'function') {
+        window.AndroidBridge.saveViewport(JSON.stringify({
+          lastViewport: vpData,
+          pageViewports: allViewportsObj
+        }));
+      }
+    } catch (e) {}
+
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({
+        type: 'viewport',
+        pageId: currentPageId,
+        panX,
+        panY,
+        zoom
+      }));
+    }
+  };
+
+  if (immediate) {
+    sync();
+  } else {
+    viewportSyncTimer = setTimeout(sync, 400);
+  }
+}
+
+function applyTransform(skipSave = false) {
   world.style.transform = `translate(${panX}px,${panY}px) scale(${zoom})`;
   const zoomChanged = Math.abs(zoom - lastAppliedZoom) > 0.0001;
   lastAppliedZoom = zoom;
@@ -509,6 +651,10 @@ function applyTransform() {
     showPreviewWindow();
   } else if (previewWindow && previewWindow.classList.contains('visible')) {
     updateMinimap();
+  }
+
+  if (!skipSave) {
+    scheduleSyncViewport(false);
   }
 }
 
@@ -2689,10 +2835,7 @@ function uploadAndPlaceFile(file, cx, cy) {
   const reader = new FileReader();
   reader.onload = async ev => {
     const isImage = file.type.startsWith('image/');
-    const host = resolveServerHost();
-    const uploadUrl = (location.protocol === 'file:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')
-      ? (host ? `http://${host}/upload` : '/upload')
-      : '/upload';
+    const uploadUrl = getUploadUrl();
     try {
       const res = await fetch(uploadUrl, {
         method: 'POST',
@@ -4321,10 +4464,7 @@ async function uploadFileToServer(file) {
     reader.onload = async ev => {
       const dataUrl = ev.target.result;
       const isImage = file.type.startsWith('image/');
-      const host = resolveServerHost();
-      const uploadUrl = (location.protocol === 'file:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')
-        ? (host ? `http://${host}/upload` : '/upload')
-        : '/upload';
+      const uploadUrl = getUploadUrl();
       try {
         const res = await fetch(uploadUrl, {
           method: 'POST',
@@ -4367,8 +4507,11 @@ async function uploadFileToServer(file) {
           };
           img.src = dataUrl;
         } else {
-          console.error(e);
-          setPreviewError('Failed to upload file (server offline).');
+          console.error('File upload failed:', e);
+          const errorMsg = e.message && !e.message.includes('fetch') && !e.message.includes('Unexpected')
+            ? `Failed to upload file (${e.message}).`
+            : 'Failed to upload file (server offline or unreachable).';
+          setPreviewError(errorMsg);
         }
       }
     };
@@ -5048,8 +5191,8 @@ function switchPage(pageId) {
   const targetPage = pages.find(p => p.id === pageId);
   if (!targetPage) return;
 
-  // Save current page viewport transform
-  pageViewports.set(currentPageId, { panX, panY, zoom });
+  // Save current page viewport transform immediately before leaving
+  scheduleSyncViewport(true);
 
   // Clear selection
   selectedIds.clear();
@@ -5076,7 +5219,8 @@ function switchPage(pageId) {
     panY = r.height / 2;
     zoom = 1;
   }
-  applyTransform();
+  applyTransform(true);
+  scheduleSyncViewport(true);
 
   // Mount elements for newly active page
   for (const el of Object.values(elements)) {
@@ -5176,6 +5320,7 @@ function deletePage(pageId) {
   }
 
   pages = pages.filter(p => p.id !== pageId);
+  pageViewports.delete(pageId);
   sendOp('pageDelete', { id: pageId });
 
   // Remove elements belonging to deleted page

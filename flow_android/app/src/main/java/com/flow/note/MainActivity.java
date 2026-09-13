@@ -117,6 +117,18 @@ public class MainActivity extends Activity {
         }
 
         @JavascriptInterface
+        public void saveViewport(String json) {
+            if (json != null && !json.isEmpty()) {
+                getSharedPreferences("FlowPrefs", MODE_PRIVATE).edit().putString("saved_viewport", json).apply();
+            }
+        }
+
+        @JavascriptInterface
+        public String getViewport() {
+            return getSharedPreferences("FlowPrefs", MODE_PRIVATE).getString("saved_viewport", "");
+        }
+
+        @JavascriptInterface
         public boolean isOffline() {
             return isOfflineMode;
         }

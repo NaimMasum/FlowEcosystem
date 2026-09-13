@@ -2,7 +2,7 @@ const express = require('express');
 const path = require('path');
 
 const app = express();
-const PORT = 4040;
+const PORT = parseInt(process.env.PDF_PORT || process.env.PORT_PDF || '4040', 10);
 
 // Serve static files from 'public' directory
 app.use(express.static(path.join(__dirname, 'public')));

@@ -6,7 +6,7 @@ const fs = require('fs');
 const os = require('os');
 const crypto = require('crypto');
 
-const PORT = process.env.PORT || 3941;
+const PORT = parseInt(process.env.PORT || '3939', 10);
 const DATA_DIR = path.join(__dirname, 'data');
 const DATA_FILE = path.join(DATA_DIR, 'board.json');
 
@@ -183,7 +183,20 @@ if (!fs.existsSync(UPLOADS_DIR)) {
 }
 
 const app = express();
-app.use(express.json({ limit: '10mb' }));
+
+// Global CORS headers for cross-origin file uploads and Android app access
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(200);
+  }
+  next();
+});
+
+app.use(express.json({ limit: '300mb' }));
+app.use(express.urlencoded({ limit: '300mb', extended: true }));
 app.use(express.static(path.join(__dirname, 'public')));
 
 // ── Central Timer Records Database API ────────────────────────
@@ -398,9 +411,6 @@ app.get('/api/link-preview', async (req, res) => {
   }
 });
 
-app.use(express.json({ limit: '300mb' }));
-app.use(express.urlencoded({ limit: '300mb', extended: true }));
-
 app.post('/upload', (req, res) => {
   try {
     const { filename, fileData } = req.body;
@@ -603,6 +613,10 @@ wss.on('connection', (ws) => {
           }
           break;
         }
+        case 'viewport': {
+          broadcast(ws, data);
+          break;
+        }
         default:
           console.warn('Unknown message type received:', data.type);
       }
@@ -670,8 +684,6 @@ function getLocalIPs() {
   return ips;
 }
 
-const { Bonjour } = require('bonjour-service');
-
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`==================================================`);
   console.log(`Flow server started!`);
@@ -689,6 +701,7 @@ server.listen(PORT, '0.0.0.0', () => {
 
   // Start mDNS/Bonjour Broadcasting
   try {
+    const { Bonjour } = require('bonjour-service');
     const validIPs = lanIPs.filter(ip => 
       !ip.startsWith('192.168.56.') && 
       !ip.startsWith('169.254.') && 
