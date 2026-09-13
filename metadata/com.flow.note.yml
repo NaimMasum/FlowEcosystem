@@ -1,0 +1,31 @@
+Categories:
+  - Office
+  - Productivity
+License: MIT
+AuthorName: Naim Masum
+SourceCode: https://github.com/NaimMasum/FlowEcosystem
+IssueTracker: https://github.com/NaimMasum/FlowEcosystem/issues
+Changelog: https://github.com/NaimMasum/FlowEcosystem/releases
+
+AutoName: Flow Note
+Summary: Collaborative infinite whiteboard, note-taking, and PDF annotation canvas
+Description: |-
+  Flow Note is a fast, flexible, and privacy-first collaborative whiteboard, infinite canvas note-taking, and PDF annotation application.
+
+  Designed for seamless offline-first productivity and instant local network synchronization across all your devices, Flow Note transforms how you sketch ideas, organize thoughts, markup documents, and collaborate in real time.
+
+RepoType: git
+Repo: https://github.com/NaimMasum/FlowEcosystem.git
+
+Builds:
+  - versionName: 1.3.2
+    versionCode: 4
+    commit: v1.3.2
+    subdir: flow_android
+    gradle:
+      - yes
+
+AutoUpdateMode: Version %v
+UpdateCheckMode: Tags
+CurrentVersion: 1.3.2
+CurrentVersionCode: 4

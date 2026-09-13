@@ -1,0 +1,5 @@
+• Screen & app mirroring with WebRTC peer streaming and interactive touch remote control
+• Endless note pages with smooth navigation and page isolation
+• Theme studio with curated dark/light presets
+• Native Android hardware audio recording bridge
+• Offline PDF viewing and dynamic local server synchronization

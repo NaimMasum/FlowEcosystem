@@ -1,0 +1,64 @@
+name: F-Droid Repository Deployment
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  deploy-fdroid:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Build Android APK
+        run: |
+          cd flow_android
+          chmod +x gradlew
+          ./gradlew assembleRelease assembleDebug
+
+      - name: Setup F-Droid Server
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y fdroidserver
+
+      - name: Prepare F-Droid Repo Directory
+        run: |
+          mkdir -p fdroid/repo
+          # Copy release/debug APKs into repo directory
+          if [ -f flow_android/app/build/outputs/apk/release/app-release-unsigned.apk ]; then
+            cp flow_android/app/build/outputs/apk/release/app-release-unsigned.apk fdroid/repo/FlowNote.apk
+          elif [ -f flow_note/public/app.apk ]; then
+            cp flow_note/public/app.apk fdroid/repo/FlowNote.apk
+          fi
+
+      - name: Deploy to GitHub Pages
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: 'fdroid'
+
+      - name: Publish Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

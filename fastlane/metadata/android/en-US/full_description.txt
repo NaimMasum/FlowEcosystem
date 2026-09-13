@@ -1,0 +1,13 @@
+Flow Note is a fast, flexible, and privacy-first collaborative whiteboard, infinite canvas note-taking, and PDF annotation application.
+
+Designed for seamless offline-first productivity and instant local network synchronization across all your devices, Flow Note transforms how you sketch ideas, organize thoughts, markup documents, and collaborate in real time.
+
+Features:
+• Infinite Whiteboard Canvas: Smooth zoom, pan, and endless canvas pages with freehand drawing, shapes, highlighters, and sticky notes.
+• Document & PDF Annotation: View and annotate PDF files with high precision, highlighting, bookmarks, and export capabilities.
+• Native Audio Recording: Crystal-clear audio recording with live equalizer visualization directly embedded into your notes.
+• Screen & App Mirroring: Low-latency WebRTC peer streaming and interactive touch remote control for presentations and multi-screen workflows.
+• Local Network Discovery: Automatically discovers and syncs with Flow Ecosystem desktop servers over your local Wi-Fi without third-party cloud dependencies.
+• Full Offline Mode: Read, write, sketch, and review documents even without an active network connection.
+• Theme Studio: Curated light, dark, and high-contrast presets with customizable canvas styling.
+• 100% Free & Open Source: No ads, no trackers, and complete control over your data.
