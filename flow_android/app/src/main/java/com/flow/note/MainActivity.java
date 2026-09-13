@@ -60,8 +60,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 public class MainActivity extends Activity {
     private WebView mWebView;
-    private final int[] NOTE_PORTS = new int[]{ 3941, 3939 };
-    private int mServerPort = 3941;
+    private final int[] NOTE_PORTS = new int[]{ 3946, 3941, 3939 };
+    private int mServerPort = 3946;
     private final int PDF_PORT = 4040;
     private AtomicBoolean found = new AtomicBoolean(false);
     private ValueCallback<Uri[]> mUploadMessage;
@@ -1301,13 +1301,26 @@ public class MainActivity extends Activity {
         builder.show();
     }
 
-    private void testAndConnect(final String ip) {
-        Toast.makeText(this, "Testing " + ip + "...", Toast.LENGTH_SHORT).show();
+    private void testAndConnect(final String rawIp) {
+        String parsedIp = rawIp.trim();
+        int explicitPort = -1;
+        if (parsedIp.contains(":")) {
+            String[] parts = parsedIp.split(":");
+            parsedIp = parts[0].trim();
+            try {
+                explicitPort = Integer.parseInt(parts[1].trim());
+            } catch (Exception ignored) {}
+        }
+        final String ip = parsedIp;
+        final int targetExplicitPort = explicitPort;
+
+        Toast.makeText(this, "Testing " + ip + (targetExplicitPort != -1 ? ":" + targetExplicitPort : "") + "...", Toast.LENGTH_SHORT).show();
         new Thread(new Runnable() {
             @Override
             public void run() {
                 int reachablePort = -1;
-                for (int port : NOTE_PORTS) {
+                int[] portsToTest = (targetExplicitPort != -1) ? new int[]{ targetExplicitPort } : NOTE_PORTS;
+                for (int port : portsToTest) {
                     try {
                         Socket socket = new Socket();
                         socket.connect(new InetSocketAddress(ip, port), 1500);

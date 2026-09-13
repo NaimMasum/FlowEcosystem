@@ -1,6 +1,6 @@
 {
   "name": "flow-note",
-  "version": "1.0.0",
+  "version": "1.3.0-beta",
   "description": "Infinite whiteboard note-taking app",
   "main": "server.js",
   "scripts": {

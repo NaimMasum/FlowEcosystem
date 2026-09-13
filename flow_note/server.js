@@ -5,10 +5,87 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const crypto = require('crypto');
+const { spawn, execSync } = require('child_process');
 
 const PORT = parseInt(process.env.PORT || '3939', 10);
 const DATA_DIR = path.join(__dirname, 'data');
 const DATA_FILE = path.join(DATA_DIR, 'board.json');
+
+// Native Windows Input Bridge Manager
+let inputBridge = null;
+let screenInfo = { width: 1920, height: 1080, virtualWidth: 1920, virtualHeight: 1080 };
+
+function initInputBridge() {
+  if (process.platform !== 'win32') {
+    console.log('[*] Screen control input bridge only available on Windows host.');
+    return;
+  }
+
+  const exePath = path.join(__dirname, 'input_bridge.exe');
+  const csPath = path.join(__dirname, 'input_bridge.cs');
+
+  if (!fs.existsSync(exePath) && fs.existsSync(csPath)) {
+    try {
+      console.log('[*] Compiling input_bridge.cs via csc.exe...');
+      const cscPath = 'C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe';
+      execSync(`"${cscPath}" /target:exe /out:"${exePath}" "${csPath}"`, { stdio: 'ignore' });
+      console.log('[*] Compiled input_bridge.exe successfully.');
+    } catch (e) {
+      console.warn('[!] Failed to compile input_bridge.cs:', e.message);
+    }
+  }
+
+  if (fs.existsSync(exePath)) {
+    try {
+      inputBridge = spawn(exePath, [], {
+        stdio: ['pipe', 'pipe', 'pipe']
+      });
+
+      inputBridge.stdout.on('data', (buf) => {
+        const text = buf.toString();
+        const lines = text.split('\n');
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed) continue;
+          try {
+            const data = JSON.parse(trimmed);
+            if (data.action === 'get_screen' && data.width && data.height) {
+              screenInfo = {
+                width: data.width,
+                height: data.height,
+                virtualWidth: data.virtualWidth || data.width,
+                virtualHeight: data.virtualHeight || data.height
+              };
+              console.log(`[*] Native Screen Info: ${screenInfo.width}x${screenInfo.height}`);
+            }
+          } catch (_) {}
+        }
+      });
+
+      inputBridge.on('error', (err) => {
+        console.warn('[!] input_bridge process error:', err.message);
+      });
+
+      inputBridge.on('exit', (code) => {
+        console.warn(`[!] input_bridge exited with code ${code}. Re-spawning in 2s...`);
+        inputBridge = null;
+        setTimeout(initInputBridge, 2000);
+      });
+
+      setTimeout(() => {
+        if (inputBridge && inputBridge.stdin) {
+          inputBridge.stdin.write(JSON.stringify({ action: 'get_screen' }) + '\n');
+        }
+      }, 500);
+
+      console.log('[*] Native Windows input bridge connected and active.');
+    } catch (err) {
+      console.warn('[!] Could not spawn input_bridge.exe:', err.message);
+    }
+  }
+}
+
+initInputBridge();
 
 // In-memory board state: { pages: [...], elements: { [id]: elementObject } }
 let boardState = {
@@ -290,13 +367,28 @@ app.get('/api/files', (req, res) => {
   }
 });
 
+// Screen info & resolution endpoint for Screen Control
+app.get('/api/screen-info', (req, res) => {
+  if (inputBridge && inputBridge.stdin) {
+    try {
+      inputBridge.stdin.write(JSON.stringify({ action: 'get_screen' }) + '\n');
+    } catch (_) {}
+  }
+  res.json({
+    success: true,
+    screen: screenInfo,
+    platform: process.platform,
+    bridgeActive: !!(inputBridge && !inputBridge.killed)
+  });
+});
+
 // App update & version check endpoint
 app.get('/api/app-version', (req, res) => {
   const clientIp = req.ip || req.connection.remoteAddress;
   console.log(`[*] /api/app-version checked by: ${clientIp}`);
   const apkPath = path.join(__dirname, 'public', 'app.apk');
   if (!fs.existsSync(apkPath)) {
-    return res.json({ available: false });
+    return res.json({ available: false, version: '1.3-beta' });
   }
 
   try {
@@ -309,6 +401,7 @@ app.get('/api/app-version', (req, res) => {
 
     res.json({
       available: true,
+      version: '1.3-beta',
       size: stat.size,
       mtime: mtime,
       date: stat.mtime.toISOString(),
@@ -614,6 +707,25 @@ wss.on('connection', (ws) => {
           break;
         }
         case 'viewport': {
+          broadcast(ws, data);
+          break;
+        }
+        case 'screenControl': {
+          if (inputBridge && inputBridge.stdin) {
+            const cmd = data.payload || data;
+            try {
+              inputBridge.stdin.write(JSON.stringify(cmd) + '\n');
+            } catch (err) {
+              console.warn('[!] Error writing to input bridge:', err.message);
+            }
+          }
+          break;
+        }
+        case 'screenSignal': {
+          broadcast(ws, data);
+          break;
+        }
+        case 'screenStatus': {
           broadcast(ws, data);
           break;
         }

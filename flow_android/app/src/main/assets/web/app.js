@@ -592,6 +592,18 @@ function handleServerMsg(msg) {
       }
       break;
     }
+    case 'screenSignal': {
+      if (typeof handleScreenSignalMsg === 'function') {
+        handleScreenSignalMsg(msg);
+      }
+      break;
+    }
+    case 'screenStatus': {
+      if (typeof handleScreenStatusMsg === 'function') {
+        handleScreenStatusMsg(msg);
+      }
+      break;
+    }
   }
 }
 
@@ -728,6 +740,8 @@ function buildNode(el, animate) {
     buildTimerContent(node, el);
   } else if (el.type === 'voice') {
     buildVoiceContent(node, el);
+  } else if (el.type === 'screen') {
+    buildScreenContent(node, el);
   } else if (el.type === 'draw') {
     buildDrawContent(node, el);
   } else {
@@ -2396,6 +2410,1166 @@ function syncVoiceNode(node, el) {
   }
 }
 
+// ─────────────────────────────────────────────────────────────
+// SCREEN & APP MIRRORING + REMOTE CONTROL CARD
+// ─────────────────────────────────────────────────────────────
+const activeScreenStreams = new Map(); // cardId -> MediaStream
+let hostScreenMetrics = { width: 1920, height: 1080 };
+
+// Query screen info from backend
+if (typeof fetch === 'function') {
+  fetch('/api/screen-info')
+    .then(r => r.json())
+    .then(data => {
+      if (data && data.screen) {
+        hostScreenMetrics = data.screen;
+      }
+    })
+    .catch(() => {});
+}
+
+function buildScreenContent(node, el) {
+  node.classList.add('screen-element');
+  const inner = document.createElement('div');
+  inner.className = 'screen-card-inner';
+
+  // 1. Header
+  const header = document.createElement('div');
+  header.className = 'screen-header';
+
+  const titleWrap = document.createElement('div');
+  titleWrap.className = 'screen-title-wrap';
+
+  const icon = document.createElement('div');
+  icon.className = 'screen-header-icon';
+  icon.innerHTML = `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>`;
+
+  const titleInput = document.createElement('input');
+  titleInput.type = 'text';
+  titleInput.className = 'screen-title-input';
+  titleInput.value = el.title || 'Screen Mirror';
+  titleInput.placeholder = 'Screen Title...';
+  titleInput.addEventListener('pointerdown', e => e.stopPropagation());
+  titleInput.addEventListener('keydown', e => {
+    e.stopPropagation();
+    if (e.key === 'Enter') titleInput.blur();
+  });
+  titleInput.addEventListener('change', () => {
+    el.title = titleInput.value.trim() || 'Screen Mirror';
+    sendOp('update', { element: el });
+  });
+
+  titleWrap.appendChild(icon);
+  titleWrap.appendChild(titleInput);
+
+  const headerActions = document.createElement('div');
+  headerActions.className = 'screen-header-actions';
+
+  const badge = document.createElement('span');
+  badge.className = 'screen-badge';
+  badge.innerHTML = `<span class="screen-badge-dot"></span><span class="screen-badge-text">READY</span>`;
+
+  const fitBtn = document.createElement('button');
+  fitBtn.className = 'screen-icon-btn';
+  fitBtn.title = 'Toggle Fit / Fill';
+  fitBtn.innerHTML = `<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>`;
+  fitBtn.addEventListener('pointerdown', e => e.stopPropagation());
+  fitBtn.addEventListener('click', e => {
+    e.stopPropagation();
+    el.fitMode = el.fitMode === 'cover' ? 'contain' : 'cover';
+    syncScreenNode(node, el);
+    sendOp('update', { element: el });
+  });
+
+  const closeBtn = document.createElement('button');
+  closeBtn.className = 'screen-icon-btn danger';
+  closeBtn.title = 'Close card';
+  closeBtn.innerHTML = `<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`;
+  closeBtn.addEventListener('pointerdown', e => e.stopPropagation());
+  closeBtn.addEventListener('click', e => {
+    e.stopPropagation();
+    stopScreenMirror(el.id);
+    delete elements[el.id];
+    dropNode(el.id);
+    sendOp('delete', { id: el.id });
+    renderPagesUI();
+    updateMinimap();
+    saveLocalState();
+  });
+
+  headerActions.appendChild(badge);
+  headerActions.appendChild(fitBtn);
+  headerActions.appendChild(closeBtn);
+
+  header.appendChild(titleWrap);
+  header.appendChild(headerActions);
+
+  // 2. Body / Canvas
+  const body = document.createElement('div');
+  body.className = 'screen-body';
+
+  // Idle Container
+  const idle = document.createElement('div');
+  idle.className = 'screen-idle-state';
+  idle.innerHTML = `
+    <div class="screen-idle-graphic">
+      <svg viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="2" y="3" width="20" height="14" rx="2"></rect>
+        <line x1="8" y1="21" x2="16" y2="21"></line>
+        <line x1="12" y1="17" x2="12" y2="21"></line>
+      </svg>
+    </div>
+    <div class="screen-idle-title">Mirror Screen or App</div>
+    <div class="screen-idle-desc">Stream your monitor, application window, or browser tab with interactive remote control.</div>
+    <button class="screen-start-btn">
+      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <polygon points="5 3 19 12 5 21 5 3"></polygon>
+      </svg>
+      <span>Select Screen or App</span>
+    </button>
+    <div class="screen-feature-chips">
+      <span class="screen-chip">🖥️ Full Display</span>
+      <span class="screen-chip">🪟 App Window</span>
+      <span class="screen-chip">🎮 Remote Control</span>
+      <span class="screen-chip">📸 Snapshot</span>
+    </div>
+  `;
+
+  const startBtn = idle.querySelector('.screen-start-btn');
+  startBtn.addEventListener('pointerdown', e => e.stopPropagation());
+  startBtn.addEventListener('click', e => {
+    e.stopPropagation();
+    startScreenMirror(el.id);
+  });
+
+  // Video Stage
+  const videoStage = document.createElement('div');
+  videoStage.className = 'screen-video-stage';
+
+  const video = document.createElement('video');
+  video.className = 'screen-video';
+  video.autoplay = true;
+  video.playsInline = true;
+  video.muted = true;
+
+  // Floating Controls Overlay
+  const toolbar = document.createElement('div');
+  toolbar.className = 'screen-floating-toolbar';
+  toolbar.addEventListener('pointerdown', e => e.stopPropagation());
+
+  // Remote Control Toggle Button
+  const controlBtn = document.createElement('button');
+  controlBtn.className = 'screen-tool-btn screen-control-toggle-btn';
+  controlBtn.title = 'Toggle Remote Control (Interact with PC screen)';
+  controlBtn.innerHTML = `
+    <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="2" y="6" width="20" height="12" rx="3"></rect>
+      <circle cx="8" cy="12" r="1"></circle>
+      <circle cx="16" cy="10" r="0.8"></circle>
+      <circle cx="16" cy="14" r="0.8"></circle>
+      <circle cx="14" cy="12" r="0.8"></circle>
+      <circle cx="18" cy="12" r="0.8"></circle>
+    </svg>
+    <span>Control</span>
+  `;
+  controlBtn.addEventListener('click', e => {
+    e.stopPropagation();
+    el.controlMode = !el.controlMode;
+    syncScreenNode(node, el);
+    showToast(el.controlMode ? '🎮 Remote Control ON: Clicks, typing & scrolling control PC' : 'Remote Control OFF');
+  });
+
+  // Trackpad Mode Toggle Button
+  const trackpadBtn = document.createElement('button');
+  trackpadBtn.className = 'screen-tool-btn screen-trackpad-toggle-btn';
+  trackpadBtn.title = 'Toggle Trackpad / Direct Touch mode';
+  trackpadBtn.innerHTML = `
+    <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round">
+      <rect x="4" y="4" width="16" height="16" rx="2"></rect>
+      <line x1="12" y1="15" x2="12" y2="20"></line>
+      <line x1="4" y1="15" x2="20" y2="15"></line>
+    </svg>
+    <span>Trackpad</span>
+  `;
+  trackpadBtn.addEventListener('click', e => {
+    e.stopPropagation();
+    el.trackpadMode = !el.trackpadMode;
+    syncScreenNode(node, el);
+    showToast(el.trackpadMode ? 'Trackpad Mode: Drag to move cursor, tap to click' : 'Direct Coordinate Mode');
+  });
+
+  // Keys Drawer Toggle Button
+  const keysBtn = document.createElement('button');
+  keysBtn.className = 'screen-tool-btn screen-keys-toggle-btn';
+  keysBtn.title = 'Open Virtual Keys & Quick Type Drawer';
+  keysBtn.innerHTML = `
+    <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round">
+      <rect x="2" y="4" width="20" height="16" rx="2"></rect>
+      <line x1="6" y1="8" x2="6.01" y2="8"></line>
+      <line x1="10" y1="8" x2="10.01" y2="8"></line>
+      <line x1="14" y1="8" x2="14.01" y2="8"></line>
+      <line x1="18" y1="8" x2="18.01" y2="8"></line>
+      <line x1="7" y1="16" x2="17" y2="16"></line>
+    </svg>
+    <span>Keys</span>
+  `;
+  keysBtn.addEventListener('click', e => {
+    e.stopPropagation();
+    const drawer = videoStage.querySelector('.screen-keys-drawer');
+    if (drawer) {
+      drawer.style.display = (drawer.style.display === 'none' ? 'flex' : 'none');
+    }
+  });
+
+  // Snapshot Button
+  const snapBtn = document.createElement('button');
+  snapBtn.className = 'screen-tool-btn';
+  snapBtn.title = 'Capture Frame to Whiteboard Note';
+  snapBtn.innerHTML = `
+    <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round">
+      <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path>
+      <circle cx="12" cy="13" r="4"></circle>
+    </svg>
+    <span>Snap</span>
+  `;
+  snapBtn.addEventListener('click', e => {
+    e.stopPropagation();
+    captureScreenSnapshot(el.id);
+  });
+
+  // PiP Button
+  const pipBtn = document.createElement('button');
+  pipBtn.className = 'screen-tool-btn';
+  pipBtn.title = 'Picture-in-Picture';
+  pipBtn.innerHTML = `
+    <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round">
+      <rect x="2" y="4" width="20" height="16" rx="2"></rect>
+      <rect x="12" y="11" width="8" height="7" rx="1"></rect>
+    </svg>
+  `;
+  pipBtn.addEventListener('click', async e => {
+    e.stopPropagation();
+    try {
+      if (document.pictureInPictureElement === video) {
+        await document.exitPictureInPicture();
+      } else if (document.pictureInPictureEnabled) {
+        await video.requestPictureInPicture();
+      }
+    } catch (_) {}
+  });
+
+  // Audio Toggle Button
+  const audioBtn = document.createElement('button');
+  audioBtn.className = 'screen-tool-btn';
+  audioBtn.title = 'Toggle Audio';
+  audioBtn.innerHTML = `
+    <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round">
+      <line x1="1" y1="1" x2="23" y2="23"></line>
+      <path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6"></path>
+      <path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2a7 7 0 0 1-.11 1.23"></path>
+    </svg>
+  `;
+  audioBtn.addEventListener('click', e => {
+    e.stopPropagation();
+    video.muted = !video.muted;
+    el.muted = video.muted;
+    audioBtn.innerHTML = video.muted
+      ? `<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="1" y1="1" x2="23" y2="23"></line><path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6"></path><path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2a7 7 0 0 1-.11 1.23"></path></svg>`
+      : `<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><line x1="12" y1="19" x2="12" y2="23"></line><line x1="8" y1="23" x2="16" y2="23"></line></svg>`;
+  });
+
+  // Stop Button
+  const stopBtn = document.createElement('button');
+  stopBtn.className = 'screen-tool-btn danger';
+  stopBtn.title = 'Stop Mirroring';
+  stopBtn.innerHTML = `
+    <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round">
+      <rect x="4" y="4" width="16" height="16" rx="2"></rect>
+    </svg>
+    <span>Stop</span>
+  `;
+  stopBtn.addEventListener('click', e => {
+    e.stopPropagation();
+    stopScreenMirror(el.id);
+  });
+
+  toolbar.appendChild(controlBtn);
+  toolbar.appendChild(trackpadBtn);
+  toolbar.appendChild(keysBtn);
+  toolbar.appendChild(snapBtn);
+  toolbar.appendChild(pipBtn);
+  toolbar.appendChild(audioBtn);
+  toolbar.appendChild(stopBtn);
+
+  // Virtual Keys Drawer
+  const keysDrawer = document.createElement('div');
+  keysDrawer.className = 'screen-keys-drawer';
+  keysDrawer.style.display = 'none';
+  keysDrawer.addEventListener('pointerdown', e => e.stopPropagation());
+
+  const keysRow = document.createElement('div');
+  keysRow.className = 'screen-keys-row';
+  const quickKeys = [
+    { label: 'Esc', key: 'Escape' },
+    { label: 'Enter', key: 'Enter' },
+    { label: 'Tab', key: 'Tab' },
+    { label: 'Win', key: 'Win' },
+    { label: 'Ctrl+C', combo: 'ctrl+c' },
+    { label: 'Ctrl+V', combo: 'ctrl+v' },
+    { label: 'Backspace', key: 'Backspace' },
+    { label: 'Space', key: 'Space' },
+    { label: '↑', key: 'ArrowUp' },
+    { label: '↓', key: 'ArrowDown' },
+    { label: '←', key: 'ArrowLeft' },
+    { label: '→', key: 'ArrowRight' }
+  ];
+
+  quickKeys.forEach(k => {
+    const kb = document.createElement('button');
+    kb.className = 'screen-key-btn';
+    kb.textContent = k.label;
+    kb.addEventListener('click', e => {
+      e.stopPropagation();
+      if (k.combo) {
+        sendOp('screenControl', { payload: { action: 'shortcut', combo: k.combo } });
+      } else {
+        sendOp('screenControl', { payload: { action: 'keydown', key: k.key } });
+        setTimeout(() => sendOp('screenControl', { payload: { action: 'keyup', key: k.key } }), 40);
+      }
+      showToast(`Sent key: ${k.label}`);
+    });
+    keysRow.appendChild(kb);
+  });
+
+  const typeWrap = document.createElement('div');
+  typeWrap.className = 'screen-type-wrap';
+  const typeInput = document.createElement('input');
+  typeInput.type = 'text';
+  typeInput.className = 'screen-type-input';
+  typeInput.placeholder = 'Type text to send directly to remote app...';
+  typeInput.addEventListener('keydown', e => {
+    e.stopPropagation();
+    if (e.key === 'Enter') {
+      const txt = typeInput.value;
+      if (txt) {
+        sendOp('screenControl', { payload: { action: 'type', text: txt } });
+        typeInput.value = '';
+        showToast('Text sent to host!');
+      }
+    }
+  });
+
+  const sendTypeBtn = document.createElement('button');
+  sendTypeBtn.className = 'screen-type-send-btn';
+  sendTypeBtn.textContent = 'Send';
+  sendTypeBtn.addEventListener('click', e => {
+    e.stopPropagation();
+    const txt = typeInput.value;
+    if (txt) {
+      sendOp('screenControl', { payload: { action: 'type', text: txt } });
+      typeInput.value = '';
+      showToast('Text sent to host!');
+    }
+  });
+
+  typeWrap.appendChild(typeInput);
+  typeWrap.appendChild(sendTypeBtn);
+
+  keysDrawer.appendChild(keysRow);
+  keysDrawer.appendChild(typeWrap);
+
+  videoStage.appendChild(video);
+  videoStage.appendChild(toolbar);
+  videoStage.appendChild(keysDrawer);
+
+  body.appendChild(idle);
+  body.appendChild(videoStage);
+
+  inner.appendChild(header);
+  inner.appendChild(body);
+  node.appendChild(inner);
+
+  setupScreenControlInteractions(node, el, video, videoStage);
+  syncScreenNode(node, el);
+}
+
+// ─────────────────────────────────────────────────────────────
+// WEBRTC SCREEN STREAMING & REMOTE TOUCH/MOUSE CONTROL
+// ─────────────────────────────────────────────────────────────
+const myClientId = 'client_' + Math.random().toString(36).slice(2, 9);
+const screenPeerConnections = new Map(); // `${cardId}_${peerId}` -> RTCPeerConnection
+const rtcConfig = {
+  iceServers: [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' }
+  ]
+};
+
+function requestRemoteScreenStream(cardId, broadcasterId) {
+  if (activeScreenStreams.has(cardId)) return; // We are local broadcaster
+  sendOp('screenSignal', {
+    cardId,
+    to: broadcasterId,
+    from: myClientId,
+    action: 'request-stream'
+  });
+}
+
+function handleScreenSignalMsg(msg) {
+  const { cardId, to, from, action } = msg;
+  if (to && to !== myClientId) return;
+
+  if (action === 'request-stream') {
+    handleBroadcasterRequestStream(cardId, from);
+  } else if (action === 'offer') {
+    handleViewerOffer(msg);
+  } else if (action === 'answer') {
+    handleBroadcasterAnswer(msg);
+  } else if (action === 'ice') {
+    handleIceCandidate(msg);
+  }
+}
+
+async function handleBroadcasterRequestStream(cardId, viewerId) {
+  const stream = activeScreenStreams.get(cardId);
+  if (!stream) return;
+
+  const key = `${cardId}_${viewerId}`;
+  if (screenPeerConnections.has(key)) {
+    try { screenPeerConnections.get(key).close(); } catch (_) {}
+  }
+
+  const pc = new RTCPeerConnection(rtcConfig);
+  screenPeerConnections.set(key, pc);
+
+  stream.getTracks().forEach(track => {
+    pc.addTrack(track, stream);
+  });
+
+  pc.onicecandidate = (e) => {
+    if (e.candidate) {
+      sendOp('screenSignal', {
+        cardId,
+        to: viewerId,
+        from: myClientId,
+        action: 'ice',
+        candidate: e.candidate
+      });
+    }
+  };
+
+  try {
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    sendOp('screenSignal', {
+      cardId,
+      to: viewerId,
+      from: myClientId,
+      action: 'offer',
+      offer: pc.localDescription
+    });
+  } catch (err) {
+    console.warn('Error creating WebRTC offer:', err);
+  }
+}
+
+async function handleViewerOffer(msg) {
+  const { cardId, from: broadcasterId, offer } = msg;
+  const el = elements[cardId];
+  const node = elementNodes.get(cardId);
+  if (!el) return;
+
+  const key = `${cardId}_${broadcasterId}`;
+  if (screenPeerConnections.has(key)) {
+    try { screenPeerConnections.get(key).close(); } catch (_) {}
+  }
+
+  const pc = new RTCPeerConnection(rtcConfig);
+  screenPeerConnections.set(key, pc);
+
+  pc.ontrack = (e) => {
+    if (e.streams && e.streams[0]) {
+      const remoteStream = e.streams[0];
+      el.hasRemoteStream = true;
+      if (node) {
+        const video = node.querySelector('.screen-video');
+        if (video) {
+          video.srcObject = remoteStream;
+          video.play().catch(() => {});
+        }
+        syncScreenNode(node, el);
+      }
+    }
+  };
+
+  pc.onicecandidate = (e) => {
+    if (e.candidate) {
+      sendOp('screenSignal', {
+        cardId,
+        to: broadcasterId,
+        from: myClientId,
+        action: 'ice',
+        candidate: e.candidate
+      });
+    }
+  };
+
+  try {
+    await pc.setRemoteDescription(new RTCSessionDescription(offer));
+    const answer = await pc.createAnswer();
+    await pc.setLocalDescription(answer);
+    sendOp('screenSignal', {
+      cardId,
+      to: broadcasterId,
+      from: myClientId,
+      action: 'answer',
+      answer: pc.localDescription
+    });
+  } catch (err) {
+    console.warn('Error handling WebRTC offer:', err);
+  }
+}
+
+async function handleBroadcasterAnswer(msg) {
+  const { cardId, from: viewerId, answer } = msg;
+  const key = `${cardId}_${viewerId}`;
+  const pc = screenPeerConnections.get(key);
+  if (pc) {
+    try {
+      await pc.setRemoteDescription(new RTCSessionDescription(answer));
+    } catch (err) {
+      console.warn('Error setting remote answer:', err);
+    }
+  }
+}
+
+async function handleIceCandidate(msg) {
+  const { cardId, from: peerId, candidate } = msg;
+  const key = `${cardId}_${peerId}`;
+  const pc = screenPeerConnections.get(key);
+  if (pc && pc.remoteDescription) {
+    try {
+      await pc.addIceCandidate(new RTCIceCandidate(candidate));
+    } catch (_) {}
+  }
+}
+
+function handleScreenStatusMsg(msg) {
+  const { cardId, isLive, broadcasterId } = msg;
+  const el = elements[cardId];
+  const node = elementNodes.get(cardId);
+  if (el) {
+    el.isLive = isLive;
+    if (broadcasterId) el.broadcasterId = broadcasterId;
+    if (!isLive) {
+      el.hasRemoteStream = false;
+      const video = node?.querySelector('.screen-video');
+      if (video) video.srcObject = null;
+    } else if (!activeScreenStreams.has(cardId)) {
+      requestRemoteScreenStream(cardId, broadcasterId);
+    }
+    if (node) syncScreenNode(node, el);
+  }
+}
+
+function setupScreenControlInteractions(node, el, video, videoStage) {
+  let isTouchActive = false;
+  let isDown = false;
+  let isDragging = false;
+  let isScrolling = false;
+  let startX = 0;
+  let startY = 0;
+  let lastX = 0;
+  let lastY = 0;
+  let lastScrollX = 0;
+  let lastScrollY = 0;
+  let touchStartTime = 0;
+  let longPressTimer = null;
+  let isLongPressTriggered = false;
+  let lastTapTime = 0;
+
+  function calcVideoScreenCoords(clientX, clientY) {
+    const rect = video.getBoundingClientRect();
+    if (!rect.width || !rect.height) return { screenX: 0, screenY: 0, renderX: 0, renderY: 0 };
+
+    const clickX = clientX - rect.left;
+    const clickY = clientY - rect.top;
+
+    const vw = video.videoWidth || hostScreenMetrics.width || 1920;
+    const vh = video.videoHeight || hostScreenMetrics.height || 1080;
+    const videoRatio = vw / vh;
+    const elemRatio = rect.width / rect.height;
+
+    let renderW = rect.width;
+    let renderH = rect.height;
+    let offsetX = 0;
+    let offsetY = 0;
+
+    if (el.fitMode !== 'cover') {
+      if (elemRatio > videoRatio) {
+        renderW = rect.height * videoRatio;
+        offsetX = (rect.width - renderW) / 2;
+      } else {
+        renderH = rect.width / videoRatio;
+        offsetY = (rect.height - renderH) / 2;
+      }
+    }
+
+    const actualX = Math.max(0, Math.min(renderW, clickX - offsetX));
+    const actualY = Math.max(0, Math.min(renderH, clickY - offsetY));
+
+    const normX = renderW > 0 ? (actualX / renderW) : 0;
+    const normY = renderH > 0 ? (actualY / renderH) : 0;
+
+    const hostW = hostScreenMetrics.width || 1920;
+    const hostH = hostScreenMetrics.height || 1080;
+
+    return {
+      normX,
+      normY,
+      screenX: Math.round(normX * hostW),
+      screenY: Math.round(normY * hostH),
+      renderX: actualX + offsetX,
+      renderY: actualY + offsetY
+    };
+  }
+
+  function createTouchRipple(rx, ry, color = 'rgba(56, 189, 248, 0.45)', borderColor = '#38bdf8') {
+    const ripple = document.createElement('div');
+    ripple.className = 'screen-click-ripple';
+    ripple.style.left = `${rx}px`;
+    ripple.style.top = `${ry}px`;
+    ripple.style.borderColor = borderColor;
+    ripple.style.backgroundColor = color;
+    videoStage.appendChild(ripple);
+    setTimeout(() => ripple.remove(), 450);
+  }
+
+  // ── TOUCH HANDLERS (for touchscreens & mobile devices) ──
+  function onTouchStart(e) {
+    if (el.controlMode === false) return;
+    if (e.target.closest('.screen-floating-toolbar') || e.target.closest('.screen-keys-drawer')) return;
+
+    isTouchActive = true;
+
+    // 2-finger gesture for scrolling
+    if (e.touches.length === 2) {
+      isDown = false;
+      isDragging = false;
+      clearTimeout(longPressTimer);
+      isScrolling = true;
+      lastScrollX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+      lastScrollY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
+
+    if (e.touches.length > 2) return;
+
+    e.preventDefault();
+    e.stopPropagation();
+
+    isScrolling = false;
+    isDown = true;
+    isDragging = false;
+    isLongPressTriggered = false;
+    touchStartTime = Date.now();
+
+    const t = e.touches[0];
+    startX = t.clientX;
+    startY = t.clientY;
+    lastX = t.clientX;
+    lastY = t.clientY;
+
+    const coords = calcVideoScreenCoords(startX, startY);
+    createTouchRipple(coords.renderX, coords.renderY);
+
+    clearTimeout(longPressTimer);
+    longPressTimer = setTimeout(() => {
+      if (isDown && !isDragging && !isScrolling) {
+        isLongPressTriggered = true;
+        createTouchRipple(coords.renderX, coords.renderY, 'rgba(249, 115, 22, 0.55)', '#f97316');
+        try { if (navigator.vibrate) navigator.vibrate(50); } catch (_) {}
+        sendOp('screenControl', {
+          action: 'click',
+          x: coords.screenX,
+          y: coords.screenY,
+          button: 'right'
+        });
+        showToast('🖱️ Right Click');
+      }
+    }, 500);
+
+    if (!el.trackpadMode) {
+      sendOp('screenControl', {
+        action: 'mousemove',
+        x: coords.screenX,
+        y: coords.screenY
+      });
+    }
+  }
+
+  function onTouchMove(e) {
+    if (el.controlMode === false) return;
+    if (e.target.closest('.screen-floating-toolbar') || e.target.closest('.screen-keys-drawer')) return;
+
+    // 2-finger scroll
+    if (e.touches.length === 2 && isScrolling) {
+      e.preventDefault();
+      e.stopPropagation();
+      const midX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+      const midY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+      const dy = midY - lastScrollY;
+      const dx = midX - lastScrollX;
+      lastScrollX = midX;
+      lastScrollY = midY;
+
+      if (Math.abs(dy) > 0.5 || Math.abs(dx) > 0.5) {
+        sendOp('screenControl', {
+          action: 'scroll',
+          deltaY: Math.round(-dy * 3.5),
+          deltaX: Math.round(-dx * 3.5)
+        });
+      }
+      return;
+    }
+
+    if (!isDown || e.touches.length !== 1) return;
+    e.preventDefault();
+    e.stopPropagation();
+
+    const t = e.touches[0];
+    const distMoved = Math.hypot(t.clientX - startX, t.clientY - startY);
+
+    if (distMoved > 8) {
+      clearTimeout(longPressTimer);
+    }
+
+    if (el.trackpadMode) {
+      const dx = (t.clientX - lastX) * 1.6;
+      const dy = (t.clientY - lastY) * 1.6;
+      lastX = t.clientX;
+      lastY = t.clientY;
+      sendOp('screenControl', {
+        action: 'mousedrag',
+        dx: Math.round(dx),
+        dy: Math.round(dy)
+      });
+    } else {
+      lastX = t.clientX;
+      lastY = t.clientY;
+      const coords = calcVideoScreenCoords(t.clientX, t.clientY);
+
+      if (distMoved > 10 && !isDragging) {
+        isDragging = true;
+        sendOp('screenControl', {
+          action: 'mousedown',
+          x: coords.screenX,
+          y: coords.screenY,
+          button: 'left'
+        });
+      } else {
+        sendOp('screenControl', {
+          action: 'mousemove',
+          x: coords.screenX,
+          y: coords.screenY
+        });
+      }
+    }
+  }
+
+  function onTouchEnd(e) {
+    if (el.controlMode === false) return;
+    if (e.target.closest('.screen-floating-toolbar') || e.target.closest('.screen-keys-drawer')) return;
+
+    clearTimeout(longPressTimer);
+
+    if (isScrolling) {
+      isScrolling = false;
+      return;
+    }
+
+    if (!isDown) return;
+    isDown = false;
+    e.preventDefault();
+    e.stopPropagation();
+
+    if (isLongPressTriggered) return;
+
+    const t = (e.changedTouches && e.changedTouches[0]) || { clientX: lastX, clientY: lastY };
+    const duration = Date.now() - touchStartTime;
+    const distMoved = Math.hypot(t.clientX - startX, t.clientY - startY);
+    const coords = calcVideoScreenCoords(t.clientX, t.clientY);
+
+    if (isDragging) {
+      isDragging = false;
+      sendOp('screenControl', {
+        action: 'mouseup',
+        x: coords.screenX,
+        y: coords.screenY,
+        button: 'left'
+      });
+      return;
+    }
+
+    const now = Date.now();
+    const isDoubleTap = (now - lastTapTime < 320) && (distMoved < 15);
+    lastTapTime = now;
+
+    if (isDoubleTap) {
+      sendOp('screenControl', {
+        action: 'dblclick',
+        x: coords.screenX,
+        y: coords.screenY
+      });
+      createTouchRipple(coords.renderX, coords.renderY, 'rgba(56, 189, 248, 0.7)');
+      return;
+    }
+
+    if (el.trackpadMode) {
+      if (distMoved < 10 && duration < 350) {
+        sendOp('screenControl', { action: 'click', button: 'left' });
+      }
+    } else {
+      if (distMoved < 12 && duration < 400) {
+        sendOp('screenControl', {
+          action: 'tap',
+          x: coords.screenX,
+          y: coords.screenY,
+          button: 'left'
+        });
+      }
+    }
+
+    setTimeout(() => { isTouchActive = false; }, 300);
+  }
+
+  function onTouchCancel() {
+    clearTimeout(longPressTimer);
+    isDown = false;
+    isDragging = false;
+    isScrolling = false;
+    setTimeout(() => { isTouchActive = false; }, 300);
+  }
+
+  // ── MOUSE / POINTER HANDLERS (for desktop & trackpad) ──
+  function onPointerDown(e) {
+    if (isTouchActive || e.pointerType === 'touch') return;
+    if (el.controlMode === false) return;
+    if (e.target.closest('.screen-floating-toolbar') || e.target.closest('.screen-keys-drawer')) return;
+
+    e.preventDefault();
+    e.stopPropagation();
+    isDown = true;
+    startX = e.clientX;
+    startY = e.clientY;
+    lastX = e.clientX;
+    lastY = e.clientY;
+
+    const coords = calcVideoScreenCoords(e.clientX, e.clientY);
+    createTouchRipple(coords.renderX, coords.renderY);
+
+    if (el.trackpadMode) {
+      sendOp('screenControl', {
+        action: 'mousedown',
+        button: (e.button === 2) ? 'right' : 'left'
+      });
+    } else {
+      sendOp('screenControl', {
+        action: 'mousedown',
+        x: coords.screenX,
+        y: coords.screenY,
+        button: (e.button === 2) ? 'right' : 'left'
+      });
+    }
+  }
+
+  function onPointerMove(e) {
+    if (isTouchActive || e.pointerType === 'touch') return;
+    if (el.controlMode === false) return;
+    if (e.target.closest('.screen-floating-toolbar') || e.target.closest('.screen-keys-drawer')) return;
+
+    if (el.trackpadMode) {
+      if (!isDown) return;
+      const dx = (e.clientX - lastX) * 1.5;
+      const dy = (e.clientY - lastY) * 1.5;
+      lastX = e.clientX;
+      lastY = e.clientY;
+      sendOp('screenControl', {
+        action: 'mousedrag',
+        dx: Math.round(dx),
+        dy: Math.round(dy)
+      });
+    } else {
+      const coords = calcVideoScreenCoords(e.clientX, e.clientY);
+      sendOp('screenControl', {
+        action: 'mousemove',
+        x: coords.screenX,
+        y: coords.screenY
+      });
+    }
+  }
+
+  function onPointerUp(e) {
+    if (isTouchActive || e.pointerType === 'touch') return;
+    if (el.controlMode === false) return;
+    if (e.target.closest('.screen-floating-toolbar') || e.target.closest('.screen-keys-drawer')) return;
+
+    if (!isDown) return;
+    isDown = false;
+    e.preventDefault();
+    e.stopPropagation();
+
+    const coords = calcVideoScreenCoords(e.clientX, e.clientY);
+    sendOp('screenControl', {
+      action: 'mouseup',
+      x: coords.screenX,
+      y: coords.screenY,
+      button: (e.button === 2) ? 'right' : 'left'
+    });
+  }
+
+  // Native Touch Listeners
+  videoStage.addEventListener('touchstart', onTouchStart, { passive: false });
+  videoStage.addEventListener('touchmove', onTouchMove, { passive: false });
+  videoStage.addEventListener('touchend', onTouchEnd, { passive: false });
+  videoStage.addEventListener('touchcancel', onTouchCancel, { passive: false });
+
+  // Pointer Listeners (Desktop Mouse)
+  videoStage.addEventListener('pointerdown', onPointerDown);
+  videoStage.addEventListener('pointermove', onPointerMove);
+  videoStage.addEventListener('pointerup', onPointerUp);
+
+  // Wheel Listener (Desktop Mouse)
+  videoStage.addEventListener('wheel', e => {
+    if (el.controlMode === false) return;
+    if (e.target.closest('.screen-floating-toolbar') || e.target.closest('.screen-keys-drawer')) return;
+    e.stopPropagation();
+    e.preventDefault();
+    sendOp('screenControl', {
+      action: 'scroll',
+      deltaY: Math.round(e.deltaY),
+      deltaX: Math.round(e.deltaX)
+    });
+  }, { passive: false });
+
+  // Context Menu
+  videoStage.addEventListener('contextmenu', e => {
+    if (el.controlMode !== false) {
+      e.preventDefault();
+      e.stopPropagation();
+      const coords = calcVideoScreenCoords(e.clientX, e.clientY);
+      createTouchRipple(coords.renderX, coords.renderY, 'rgba(249, 115, 22, 0.5)', '#f97316');
+      sendOp('screenControl', {
+        action: 'click',
+        x: coords.screenX,
+        y: coords.screenY,
+        button: 'right'
+      });
+    }
+  });
+}
+
+async function startScreenMirror(id) {
+  const node = elementNodes.get(id);
+  const el = elements[id];
+  if (!node || !el) return;
+
+  try {
+    const stream = await navigator.mediaDevices.getDisplayMedia({
+      video: {
+        cursor: 'always',
+        frameRate: { ideal: 60, max: 60 }
+      },
+      audio: true
+    });
+
+    activeScreenStreams.set(id, stream);
+    el.isLive = true;
+    el.controlMode = true;
+    el.broadcasterId = myClientId;
+
+    const videoTrack = stream.getVideoTracks()[0];
+    if (videoTrack) {
+      el.sourceLabel = videoTrack.label || 'Screen / App';
+      if (!el.title || el.title === 'Screen Mirror') {
+        el.title = videoTrack.label || 'Screen Mirror';
+      }
+
+      videoTrack.addEventListener('ended', () => {
+        stopScreenMirror(id);
+      });
+    }
+
+    const video = node.querySelector('.screen-video');
+    if (video) {
+      video.srcObject = stream;
+      video.play().catch(() => {});
+    }
+
+    syncScreenNode(node, el);
+    sendOp('update', { element: el });
+    sendOp('screenStatus', { cardId: id, isLive: true, title: el.title, broadcasterId: myClientId });
+    showToast('Screen mirror live & streaming!');
+  } catch (err) {
+    console.warn('Screen share canceled or error:', err);
+    showToast('Screen share canceled or permission denied');
+  }
+}
+
+function stopScreenMirror(id) {
+  const stream = activeScreenStreams.get(id);
+  if (stream) {
+    stream.getTracks().forEach(t => {
+      try { t.stop(); } catch (_) {}
+    });
+    activeScreenStreams.delete(id);
+  }
+
+  for (const [key, pc] of screenPeerConnections.entries()) {
+    if (key.startsWith(`${id}_`)) {
+      try { pc.close(); } catch (_) {}
+      screenPeerConnections.delete(key);
+    }
+  }
+
+  const el = elements[id];
+  const node = elementNodes.get(id);
+  if (el) {
+    el.isLive = false;
+    el.hasRemoteStream = false;
+    if (node) {
+      const video = node.querySelector('.screen-video');
+      if (video) video.srcObject = null;
+      syncScreenNode(node, el);
+    }
+    sendOp('update', { element: el });
+    sendOp('screenStatus', { cardId: id, isLive: false });
+  }
+}
+
+function cleanupScreenNode(id) {
+  const stream = activeScreenStreams.get(id);
+  if (stream) {
+    stream.getTracks().forEach(t => {
+      try { t.stop(); } catch (_) {}
+    });
+    activeScreenStreams.delete(id);
+  }
+  for (const [key, pc] of screenPeerConnections.entries()) {
+    if (key.startsWith(`${id}_`)) {
+      try { pc.close(); } catch (_) {}
+      screenPeerConnections.delete(key);
+    }
+  }
+}
+
+function captureScreenSnapshot(id) {
+  const node = elementNodes.get(id);
+  const el = elements[id];
+  if (!node || !el) return;
+  const video = node.querySelector('.screen-video');
+  if (!video || !video.videoWidth) {
+    showToast('No active video frame to capture');
+    return;
+  }
+
+  try {
+    const canvas = document.createElement('canvas');
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    const dataUrl = canvas.toDataURL('image/png');
+
+    const snapId = 'e' + Math.random().toString(36).slice(2, 11);
+    const snapW = Math.min(el.w, 480);
+    const snapH = Math.round(snapW * (canvas.height / canvas.width));
+    const snapEl = {
+      id: snapId,
+      type: 'image',
+      url: dataUrl,
+      x: el.x + el.w + 24,
+      y: el.y,
+      w: snapW,
+      h: snapH,
+      color: el.color || 'blueprint',
+      zIndex: nextZ(),
+      pageId: currentPageId
+    };
+
+    elements[snapId] = snapEl;
+    mountElement(snapEl, true);
+    select(snapId, false);
+    sendOp('add', { element: snapEl });
+    renderPagesUI();
+    updateMinimap();
+    showToast('📸 Snapshot captured to whiteboard note!');
+  } catch (err) {
+    console.error('Failed to capture snapshot:', err);
+    showToast('Failed to snapshot frame');
+  }
+}
+
+function syncScreenNode(node, el) {
+  const titleInput = node.querySelector('.screen-title-input');
+  if (titleInput && document.activeElement !== titleInput) {
+    titleInput.value = el.title || 'Screen Mirror';
+  }
+
+  const idle = node.querySelector('.screen-idle-state');
+  const videoStage = node.querySelector('.screen-video-stage');
+  const badge = node.querySelector('.screen-badge');
+  const badgeText = node.querySelector('.screen-badge-text');
+  const controlBtn = node.querySelector('.screen-control-toggle-btn');
+  const trackpadBtn = node.querySelector('.screen-trackpad-toggle-btn');
+  const video = node.querySelector('.screen-video');
+
+  const isBroadcaster = activeScreenStreams.has(el.id);
+  const isStreaming = el.isLive && (isBroadcaster || el.hasRemoteStream);
+  const isRemoteLive = el.isLive && !isBroadcaster;
+
+  // If remote card is live, request stream from broadcaster if not yet received
+  if (isRemoteLive && !el.hasRemoteStream && el.broadcasterId) {
+    requestRemoteScreenStream(el.id, el.broadcasterId);
+  }
+
+  const showVideo = isStreaming || isRemoteLive;
+
+  if (idle) idle.style.display = showVideo ? 'none' : 'flex';
+  if (videoStage) {
+    videoStage.style.display = showVideo ? 'flex' : 'none';
+    videoStage.classList.toggle('active', showVideo);
+    videoStage.classList.toggle('control-mode', !!el.controlMode);
+    videoStage.classList.toggle('trackpad-mode', !!el.trackpadMode);
+    videoStage.classList.toggle('cover', el.fitMode === 'cover');
+  }
+
+  if (badge && badgeText) {
+    if (el.controlMode) {
+      badge.className = 'screen-badge control-on';
+      badgeText.textContent = el.trackpadMode ? 'TRACKPAD' : 'CONTROL ON';
+    } else if (isStreaming) {
+      badge.className = 'screen-badge live';
+      badgeText.textContent = 'LIVE';
+    } else if (isRemoteLive) {
+      badge.className = 'screen-badge live';
+      badgeText.textContent = 'CONNECTING';
+    } else {
+      badge.className = 'screen-badge';
+      badgeText.textContent = 'READY';
+    }
+  }
+
+  if (controlBtn) {
+    controlBtn.classList.toggle('active-control', !!el.controlMode);
+  }
+  if (trackpadBtn) {
+    trackpadBtn.classList.toggle('active', !!el.trackpadMode);
+  }
+}
+
 function buildShapeContent(node, el) {
   // ── SVG layer (the actual drawn shape) ───────────────
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -2521,6 +3695,8 @@ function syncNode(el) {
     syncTimerNode(node, el);
   } else if (el.type === 'voice') {
     syncVoiceNode(node, el);
+  } else if (el.type === 'screen') {
+    syncScreenNode(node, el);
   } else if (el.type === 'draw') {
     syncDrawSVG(node, el);
   } else {
@@ -2628,6 +3804,7 @@ function clearAllNodes() {
 function dropNode(id) {
   stopTimerTick(id);
   cleanupVoiceNode(id);
+  cleanupScreenNode(id);
   const n = elementNodes.get(id);
   if (n) { n.remove(); elementNodes.delete(id); }
   shapeTextEditors.delete(id); // clean up editor registry
@@ -3260,13 +4437,23 @@ function onElementPointerDown(e, id) {
   // Let textarea handle its own events when in edit mode
   if (e.target.tagName === 'TEXTAREA' && !e.target.readOnly) return;
 
+  // Never hijack touches/clicks on buttons, inputs, selects
+  if (e.target.closest('button, input, select')) return;
+
+  const targetEl = elements[id];
+
+  // For screen mirror cards: touching inside the video or controls must NOT drag the card!
+  // Card movement is done by grabbing the screen header (.screen-header)
+  if (targetEl && targetEl.type === 'screen') {
+    if (!e.target.closest('.screen-header')) return;
+  }
+
   e.stopPropagation();
 
   // If a non-select tool is active, canvas pointerdown will handle placement
   if (activeTool !== 'select') return;
 
   // SAFETY: Ensure element belongs to currentPageId
-  const targetEl = elements[id];
   const targetPageId = targetEl ? (targetEl.pageId || pages[0]?.id || 'page-1') : null;
   if (targetPageId && targetPageId !== currentPageId) return;
 
@@ -3341,7 +4528,8 @@ function onHandlePointerDown(e, id, handleName) {
 // RESIZE MATH
 // ─────────────────────────────────────────────────────────────
 function applyResize(el, snap, handle, dxW, dyW) {
-  const MIN = 40;
+  const MIN = el.type === 'screen' ? 260 : 40;
+  const MIN_H = el.type === 'screen' ? 180 : 40;
 
   if (el.type === 'line' || el.type === 'arrow') {
     if (handle === 'start') { el.x1 = snap.x1 + dxW; el.y1 = snap.y1 + dyW; }
@@ -3351,9 +4539,8 @@ function applyResize(el, snap, handle, dxW, dyW) {
 
   let nw = snap.w, nh = snap.h, nx = snap.x, ny = snap.y;
 
-  // For images: free resize by default; Shift = lock aspect ratio.
-  // For other elements: always free.
-  const lockRatio = el.type === 'image' && resizeLockRatio;
+  // For images and screens: free resize by default; Shift = lock aspect ratio.
+  const lockRatio = (el.type === 'image' || el.type === 'screen') && resizeLockRatio;
 
   const clampAR = (rw, rh) => {
     if (!lockRatio || !snap.ratio) return [rw, rh];
@@ -3364,16 +4551,16 @@ function applyResize(el, snap, handle, dxW, dyW) {
   };
 
   if (handle === 'se') {
-    [nw, nh] = clampAR(Math.max(MIN, snap.w + dxW), Math.max(MIN, snap.h + dyW));
+    [nw, nh] = clampAR(Math.max(MIN, snap.w + dxW), Math.max(MIN_H, snap.h + dyW));
   } else if (handle === 'nw') {
-    [nw, nh] = clampAR(Math.max(MIN, snap.w - dxW), Math.max(MIN, snap.h - dyW));
+    [nw, nh] = clampAR(Math.max(MIN, snap.w - dxW), Math.max(MIN_H, snap.h - dyW));
     nx = snap.x + snap.w - nw;
     ny = snap.y + snap.h - nh;
   } else if (handle === 'ne') {
-    [nw, nh] = clampAR(Math.max(MIN, snap.w + dxW), Math.max(MIN, snap.h - dyW));
+    [nw, nh] = clampAR(Math.max(MIN, snap.w + dxW), Math.max(MIN_H, snap.h - dyW));
     ny = snap.y + snap.h - nh;
   } else if (handle === 'sw') {
-    [nw, nh] = clampAR(Math.max(MIN, snap.w - dxW), Math.max(MIN, snap.h + dyW));
+    [nw, nh] = clampAR(Math.max(MIN, snap.w - dxW), Math.max(MIN_H, snap.h + dyW));
     nx = snap.x + snap.w - nw;
   }
 
@@ -3536,6 +4723,18 @@ function createElement(type, wx, wy) {
       duration: 0,
       waveform: []
     });
+  } else if (type === 'screen') {
+    Object.assign(el, {
+      x: wx - 260, y: wy - 180, w: 520, h: 360,
+      title: 'Screen Mirror',
+      color: 'blueprint',
+      isLive: false,
+      controlMode: true,
+      trackpadMode: false,
+      fitMode: 'contain',
+      sourceLabel: '',
+      muted: true
+    });
   } else if (type === 'rect' || type === 'ellipse') {
     Object.assign(el, { x: wx - 80, y: wy - 60, w: 160, h: 120 });
   } else if (type === 'line' || type === 'arrow') {
@@ -3688,6 +4887,7 @@ const toolDefs = [
   { id: 'tool-image',   mId: 'm-tool-image',   name: 'image'   },
   { id: 'tool-timer',   mId: 'm-tool-timer',   name: 'timer'   },
   { id: 'tool-voice',   mId: 'm-tool-voice',   name: 'voice'   },
+  { id: 'tool-screen',  mId: 'm-tool-screen',  name: 'screen'  },
 ];
 
 function setActiveTool(name) {
@@ -4865,6 +6065,24 @@ function setupKeyboard() {
       return;
     }
 
+    // Remote Control key forwarding when screen card is in control mode
+    if (selectedIds.size === 1) {
+      const [selId] = selectedIds;
+      const selEl = elements[selId];
+      if (selEl && selEl.type === 'screen' && selEl.controlMode) {
+        if (e.key === 'Escape') {
+          selEl.controlMode = false;
+          syncScreenNode(elementNodes.get(selId), selEl);
+          showToast('Remote Control OFF (Esc)');
+          return;
+        }
+        e.preventDefault();
+        sendOp('screenControl', { payload: { action: 'keydown', key: e.key } });
+        setTimeout(() => sendOp('screenControl', { payload: { action: 'keyup', key: e.key } }), 35);
+        return;
+      }
+    }
+
     switch (e.key.toLowerCase()) {
       case 'v':       setActiveTool('select'); break;
       case 'd':       setActiveTool('draw');   break;
@@ -4876,6 +6094,7 @@ function setupKeyboard() {
       case 'i':       showImageModal();          break;
       case 't':       spawnAtCenter('timer');    break;
       case 'm':       spawnAtCenter('voice');    break;
+      case 's':       spawnAtCenter('screen');   break;
       case 'escape':  deselect();                break;
       case 'delete':
       case 'backspace': deleteSelected();        break;
@@ -5085,6 +6304,8 @@ function updateMinimap() {
         ctx.fillStyle = '#f87171';
       } else if (el.type === 'image') {
         ctx.fillStyle = '#60a5fa';
+      } else if (el.type === 'screen') {
+        ctx.fillStyle = '#38bdf8';
       } else if (el.type === 'link') {
         ctx.fillStyle = '#a78bfa';
       } else {
