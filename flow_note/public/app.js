@@ -1212,7 +1212,8 @@ function pinRecordToNote(el, rec) {
     y: el.y,
     w: 220,
     h: 220,
-    text: lines.join('\n')
+    text: lines.join('\n'),
+    pageId: el.pageId || currentPageId
   };
 
   elements[noteId] = noteEl;
@@ -2667,6 +2668,10 @@ function addHandle(node, el, name, left, top) {
 // SELECT / DESELECT
 // ─────────────────────────────────────────────────────────────
 function select(id, additive = false) {
+  if (id && elements[id]) {
+    const elPageId = elements[id].pageId || pages[0]?.id || 'page-1';
+    if (elPageId !== currentPageId) return;
+  }
   if (!additive) {
     selectedIds.forEach(old => {
       if (old !== id && elements[old]) syncNode(elements[old]);
@@ -3259,6 +3264,11 @@ function onElementPointerDown(e, id) {
   // If a non-select tool is active, canvas pointerdown will handle placement
   if (activeTool !== 'select') return;
 
+  // SAFETY: Ensure element belongs to currentPageId
+  const targetEl = elements[id];
+  const targetPageId = targetEl ? (targetEl.pageId || pages[0]?.id || 'page-1') : null;
+  if (targetPageId && targetPageId !== currentPageId) return;
+
   // Second press of a double-click — skip drag setup entirely so dblclick handlers run cleanly
   if (e.detail >= 2) return;
 
@@ -3285,10 +3295,12 @@ function onElementPointerDown(e, id) {
   dragWorldStartX = wp.x;
   dragWorldStartY = wp.y;
 
-  dragElementSnaps = [...selectedIds].map(sid => {
-    const el = elements[sid];
-    return { id: sid, x: el.x, y: el.y, x1: el.x1, y1: el.y1, x2: el.x2, y2: el.y2 };
-  });
+  dragElementSnaps = [...selectedIds]
+    .filter(sid => elements[sid] && (elements[sid].pageId || pages[0]?.id || 'page-1') === currentPageId)
+    .map(sid => {
+      const el = elements[sid];
+      return { id: sid, x: el.x, y: el.y, x1: el.x1, y1: el.y1, x2: el.x2, y2: el.y2 };
+    });
 
   // Capture so we receive move/up even if pointer leaves element
   viewport.setPointerCapture(e.pointerId);
@@ -3442,6 +3454,10 @@ function updateMarquee(cx, cy) {
   selectedIds.clear();
 
   Object.values(elements).forEach(el => {
+    // CRITICAL: Only select elements belonging to the currently active page!
+    const elPageId = el.pageId || pages[0]?.id || 'page-1';
+    if (elPageId !== currentPageId) return;
+
     let inRect = false;
     if (el.type === 'line' || el.type === 'arrow') {
       const minX = Math.min(el.x1, el.x2);
@@ -3461,6 +3477,9 @@ function updateMarquee(cx, cy) {
 
   let changed = false;
   Object.values(elements).forEach(el => {
+    const elPageId = el.pageId || pages[0]?.id || 'page-1';
+    if (elPageId !== currentPageId) return;
+
     const was = prevSelected.has(el.id);
     const is = selectedIds.has(el.id);
     if (was !== is) {
@@ -3568,14 +3587,25 @@ function editSelected() {
 function deleteSelected() {
   if (!selectedIds.size) return;
   const ids = [...selectedIds];
+  let deletedCount = 0;
   ids.forEach(id => {
+    const el = elements[id];
+    const elPageId = el ? (el.pageId || pages[0]?.id || 'page-1') : null;
+    if (elPageId && elPageId !== currentPageId) {
+      console.warn(`[SAFETY] Prevented deleting element ${id} belonging to ${elPageId} while on ${currentPageId}`);
+      selectedIds.delete(id);
+      return;
+    }
     dropNode(id);
     delete elements[id];
     sendOp('delete', { id });
+    deletedCount++;
   });
   selectedIds.clear();
   syncSelectionUI();
-  showToast(`Deleted ${ids.length} item${ids.length > 1 ? 's' : ''}`);
+  if (deletedCount > 0) {
+    showToast(`Deleted ${deletedCount} item${deletedCount > 1 ? 's' : ''}`);
+  }
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -3590,11 +3620,14 @@ function duplicateSelected() {
   selectedIds.forEach(id => {
     const orig = elements[id];
     if (!orig) return;
+    const origPageId = orig.pageId || pages[0]?.id || 'page-1';
+    if (origPageId !== currentPageId) return;
+
     const newId = 'e' + Math.random().toString(36).slice(2, 11);
     idMap.set(id, newId);
     const clone = JSON.parse(JSON.stringify(orig));
     clone.id = newId;
-    clone.pageId = orig.pageId || currentPageId;
+    clone.pageId = currentPageId;
     clone.zIndex = nextZ();
     if (clone.type === 'line' || clone.type === 'arrow') {
       clone.x1 += offset; clone.y1 += offset;
@@ -3631,7 +3664,9 @@ function duplicateSelected() {
 
   selectedIds.clear();
   newIds.forEach(nid => selectedIds.add(nid));
-  Object.values(elements).forEach(el => syncNode(el));
+  Object.values(elements).forEach(el => {
+    if ((el.pageId || pages[0]?.id || 'page-1') === currentPageId) syncNode(el);
+  });
   syncSelectionUI();
   renderPagesUI();
   updateMinimap();
@@ -3700,6 +3735,8 @@ function setupToolbar() {
       if (!color || !selectedIds.size) return;
       selectedIds.forEach(id => {
         if (!elements[id]) return;
+        const elPageId = elements[id].pageId || pages[0]?.id || 'page-1';
+        if (elPageId !== currentPageId) return;
         elements[id].color = color;
         syncNode(elements[id]);
         sendOp('update', { element: elements[id] });
@@ -4311,7 +4348,8 @@ function restoreTimerToBoard(rec) {
     startedAt: null,
     pomodoroDurationMs: 25 * 60 * 1000,
     laps: Array.isArray(rec.laps) ? [...rec.laps] : [],
-    records: Array.isArray(rec.records) ? [...rec.records] : []
+    records: Array.isArray(rec.records) ? [...rec.records] : [],
+    pageId: currentPageId
   };
 
   elements[newId] = restoredEl;
@@ -4357,7 +4395,8 @@ function pinArchivedRecordToNote(rec) {
     y: center.y - 110,
     w: 220,
     h: 220,
-    text: lines.join('\n')
+    text: lines.join('\n'),
+    pageId: currentPageId
   };
 
   elements[noteId] = noteEl;
@@ -5278,7 +5317,8 @@ function duplicatePage(pageId) {
   const idMap = new Map();
 
   for (const el of Object.values(elements)) {
-    if (el.pageId === pageId) {
+    const elPageId = el.pageId || pages[0]?.id || 'page-1';
+    if (elPageId === pageId) {
       const newElId = 'e' + Math.random().toString(36).slice(2, 11);
       idMap.set(el.id, newElId);
       const clone = JSON.parse(JSON.stringify(el));
@@ -5325,7 +5365,8 @@ function deletePage(pageId) {
 
   // Remove elements belonging to deleted page
   for (const id in elements) {
-    if (elements[id].pageId === pageId) {
+    const elPageId = elements[id].pageId || pages[0]?.id || 'page-1';
+    if (elPageId === pageId) {
       dropNode(id);
       delete elements[id];
       selectedIds.delete(id);
